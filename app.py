@@ -716,6 +716,371 @@ class ConvertDialog(QDialog):
             self.win.open_file(pdfs[-1])
 
 # =============================================================================
+#  TÁCH FILE PDF GỘP THÀNH TỪNG VĂN BẢN
+# =============================================================================
+class AnalyzeWorker(QThread):
+    prog = pyqtSignal(int, int)
+    result = pyqtSignal(object, str)
+
+    def __init__(self, data):
+        super().__init__()
+        self.data = data
+        self._stop = False
+
+    def stop(self):
+        self._stop = True
+
+    def run(self):
+        try:
+            import splitter
+            doc = fitz.open(stream=self.data, filetype="pdf")
+            infos = splitter.analyze(doc, lambda a, b: self.prog.emit(a, b), lambda: self._stop)
+            self.result.emit(infos, "")
+        except Exception:
+            self.result.emit(None, traceback.format_exc())
+
+
+class SplitDialog(QDialog):
+    C_START = QColor("#d7f2d7")
+    C_BLANK = QColor("#e4e4e4")
+
+    def __init__(self, win):
+        super().__init__(win)
+        import splitter
+        self.sp = splitter
+        self.win = win
+        self.data = None
+        self.src_path = None
+        self.doc = None
+        self.infos = None
+        self.starts, self.blanks = set(), set()
+        self.files = []
+        self.setWindowTitle("Tách file PDF gộp thành từng văn bản")
+        self.setAcceptDrops(True)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(8, 8, 8, 8)
+        outer.setSpacing(5)
+
+        r1 = QHBoxLayout()
+        r1.addWidget(QLabel("<b>File PDF gộp:</b>"))
+        self.src_lbl = QLabel("(chưa chọn)")
+        self.src_lbl.setMinimumWidth(100)
+        r1.addWidget(self.src_lbl, 1)
+        b = QToolButton(); b.setText(" Chọn file... "); b.clicked.connect(self.pick_file)
+        r1.addWidget(b)
+        outer.addLayout(r1)
+
+        r2 = QHBoxLayout()
+        r2.addWidget(QLabel("Nhận biết văn bản:"))
+        self.mode = QComboBox()
+        self.mode.addItem("Tự động – trang có Quốc hiệu là trang đầu văn bản", "auto")
+        self.mode.addItem("Theo trang trống – trang trắng ngăn cách các văn bản", "blank")
+        self.mode.addItem("Cố định – mỗi văn bản N trang", "every")
+        r2.addWidget(self.mode, 1)
+        self.every = QSpinBox(); self.every.setRange(1, 500); self.every.setValue(2)
+        self.every.setPrefix("N = ")
+        r2.addWidget(self.every)
+        self.drop_blank = QCheckBox("Bỏ trang trống")
+        self.drop_blank.setChecked(True)
+        r2.addWidget(self.drop_blank)
+        outer.addLayout(r2)
+
+        hint = QLabel("Bấm vào 1 trang để <b>đặt / bỏ</b> chỗ bắt đầu văn bản mới (ô xanh). "
+                      "Chuột phải: đánh dấu trang trống / giữ trang.")
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color:#555")
+        outer.addWidget(hint)
+
+        self.pages = QListWidget()
+        self.pages.setViewMode(QListWidget.IconMode)
+        self.pages.setResizeMode(QListWidget.Adjust)
+        self.pages.setMovement(QListWidget.Static)
+        self.pages.setIconSize(QSize(84, 118))
+        self.pages.setGridSize(QSize(104, 168))
+        self.pages.setWordWrap(True)
+        self.pages.setSpacing(4)
+        self.pages.setMinimumHeight(180)
+        self.pages.itemClicked.connect(self.toggle_start)
+        self.pages.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.pages.customContextMenuRequested.connect(self.page_menu)
+        outer.addWidget(self.pages, 1)
+
+        self.summary = QLabel("")
+        self.summary.setWordWrap(True)
+        self.summary.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.summary.setStyleSheet("QLabel{background:#eef4ff;border:1px solid #c5d6f5;padding:5px;border-radius:4px;}")
+        sc = QScrollArea(); sc.setWidgetResizable(True); sc.setFrameShape(QFrame.NoFrame)
+        sc.setWidget(self.summary); sc.setMaximumHeight(70)
+        outer.addWidget(sc)
+
+        r3 = QHBoxLayout()
+        self.same_dir = QCheckBox("Lưu cùng thư mục file gốc")
+        self.same_dir.setChecked(True)
+        self.out_dir = win.last_dir
+        self.out_lbl = QLabel("")
+        b = QToolButton(); b.setText(" Chọn thư mục khác... "); b.clicked.connect(self.pick_dir)
+        r3.addWidget(self.same_dir); r3.addWidget(b); r3.addWidget(self.out_lbl, 1)
+        outer.addLayout(r3)
+
+        bb = QHBoxLayout()
+        self.b_go = QToolButton(); self.b_go.setText("  ✂ Tách && lưu  ")
+        f = self.b_go.font(); f.setBold(True); self.b_go.setFont(f)
+        self.b_go.clicked.connect(self.do_split)
+        self.b_folder = QToolButton(); self.b_folder.setText(" Mở thư mục kết quả ")
+        self.b_folder.clicked.connect(self.open_folder)
+        self.b_folder.setEnabled(False)
+        b_close = QToolButton(); b_close.setText(" Đóng "); b_close.clicked.connect(self.reject)
+        bb.addWidget(self.b_go); bb.addWidget(self.b_folder); bb.addStretch(1); bb.addWidget(b_close)
+        outer.addLayout(bb)
+
+        self.mode.currentIndexChanged.connect(self.recompute_auto)
+        self.every.valueChanged.connect(self.recompute_auto)
+        self.drop_blank.toggled.connect(self.refresh)
+        self.every.setVisible(False)
+        self._thumb_q = []
+        self._thumb_t = QTimer(self, interval=0, timeout=self._thumb_tick)
+        self._fit_screen()
+        if win.pdf:
+            win.view.close_editor(True)
+            self.load(win.pdf.path, win.pdf.doc.tobytes())
+        else:
+            self.refresh()
+
+    def _fit_screen(self):
+        w, h = 760, 560
+        try:
+            scr = (self.parent().screen() if self.parent() is not None and hasattr(self.parent(), "screen")
+                   else QApplication.primaryScreen())
+            ag = scr.availableGeometry()
+            self.resize(max(460, min(w, ag.width() - 40)), max(360, min(h, ag.height() - 80)))
+            g = self.frameGeometry(); g.moveCenter(ag.center())
+            self.move(max(ag.left(), g.left()), max(ag.top(), g.top()))
+        except Exception:
+            self.resize(w, h)
+
+    # ---- nạp file
+    def pick_file(self):
+        p, _ = QFileDialog.getOpenFileName(self, "Chọn file PDF gộp", self.win.last_dir, "PDF (*.pdf)")
+        if p:
+            with open(p, "rb") as f:
+                self.load(os.path.normpath(p), f.read())
+
+    def dragEnterEvent(self, e):
+        if e.mimeData().hasUrls():
+            e.acceptProposedAction()
+
+    def dropEvent(self, e):
+        for u in e.mimeData().urls():
+            p = os.path.normpath(u.toLocalFile())
+            if p.lower().endswith(".pdf"):
+                with open(p, "rb") as f:
+                    self.load(p, f.read())
+                break
+
+    def load(self, path, data):
+        self.src_path, self.data = path, data
+        self.doc = fitz.open(stream=data, filetype="pdf")
+        if self.doc.needs_pass:
+            QMessageBox.warning(self, APP_TITLE, "File có mật khẩu – hãy mở bằng phần mềm trước.")
+            self.doc = None
+            return
+        self.src_lbl.setText("%s  (%d trang)" % (path, self.doc.page_count))
+        self.pages.clear()
+        for i in range(self.doc.page_count):
+            it = QListWidgetItem("Trang %d" % (i + 1))
+            it.setTextAlignment(Qt.AlignHCenter | Qt.AlignTop)
+            it.setSizeHint(QSize(100, 164))
+            self.pages.addItem(it)
+        self._thumb_q = list(range(self.doc.page_count))
+        self._thumb_t.start()
+        self.infos = None
+        self.files = []
+        self.b_folder.setEnabled(False)
+        self.summary.setText("Đang phân tích các trang...")
+        self.b_go.setEnabled(False)
+        self.prog = QProgressDialog("Đang phân tích từng trang (nhận biết trang đầu văn bản, trang trống)...",
+                                    "Dừng", 0, self.doc.page_count, self)
+        self.prog.setWindowTitle(APP_TITLE)
+        self.prog.setWindowModality(Qt.WindowModal)
+        self.prog.setMinimumDuration(400)
+        self.worker = AnalyzeWorker(data)
+        self.worker.prog.connect(lambda a, b: self.prog.setValue(a))
+        self.prog.canceled.connect(self.worker.stop)
+        self.worker.result.connect(self.analyzed)
+        self.worker.start()
+
+    def analyzed(self, infos, err):
+        self.prog.close()
+        if err or infos is None:
+            QMessageBox.critical(self, APP_TITLE, "Không phân tích được file:\n" + (err or "")[-1200:])
+            return
+        n = self.doc.page_count
+        while len(infos) < n:  # người dùng bấm Dừng
+            infos.append(self.sp.PageInfo(False, False, "", 0.0))
+        self.infos = infos
+        self.blanks = set(i for i, x in enumerate(infos) if x.blank)
+        self.recompute_auto()
+        self.b_go.setEnabled(True)
+
+    def _thumb_tick(self):
+        if not self._thumb_q or self.doc is None:
+            self._thumb_t.stop()
+            return
+        i = self._thumb_q.pop(0)
+        if i >= self.pages.count():
+            return
+        page = self.doc[i]
+        s = 84 / max(page.rect.width, 1)
+        pm = page.get_pixmap(matrix=fitz.Matrix(s, s), alpha=False)
+        self.pages.item(i).setIcon(QIcon(QPixmap.fromImage(pix_to_qimage(pm))))
+
+    # ---- đánh dấu
+    def recompute_auto(self, *_):
+        key = self.mode.currentData()
+        self.every.setVisible(key == "every")
+        if self.infos is None:
+            return
+        self.starts = self.sp.auto_starts(self.infos, key, self.every.value(), self.blanks)
+        self.refresh()
+
+    def toggle_start(self, it):
+        if self.infos is None:
+            return
+        i = self.pages.row(it)
+        if i in self.blanks:
+            self.blanks.discard(i)  # bấm vào trang trống -> giữ lại trang đó
+        elif i in self.starts:
+            first = min([p for p in range(len(self.infos)) if p not in self.blanks], default=0)
+            if i != first:
+                self.starts.discard(i)
+        else:
+            self.starts.add(i)
+        self.refresh()
+
+    def page_menu(self, pos):
+        it = self.pages.itemAt(pos)
+        if it is None or self.infos is None:
+            return
+        i = self.pages.row(it)
+        m = QMenu(self)
+        a1 = m.addAction("▶ Bắt đầu văn bản mới từ trang này")
+        a2 = m.addAction("Bỏ đánh dấu bắt đầu")
+        m.addSeparator()
+        a3 = m.addAction("Đánh dấu TRANG TRỐNG (bỏ đi)")
+        a4 = m.addAction("Giữ trang này (không phải trang trống)")
+        a = m.exec_(self.pages.viewport().mapToGlobal(pos))
+        if a is a1:
+            self.starts.add(i); self.blanks.discard(i)
+        elif a is a2:
+            self.starts.discard(i)
+        elif a is a3:
+            self.blanks.add(i); self.starts.discard(i)
+        elif a is a4:
+            self.blanks.discard(i)
+        self.refresh()
+
+    def groups(self):
+        if self.infos is None:
+            return []
+        return self.sp.plan(self.infos, self.mode.currentData(), self.every.value(),
+                            self.drop_blank.isChecked(), starts=self.starts, blanks=self.blanks)
+
+    def refresh(self, *_):
+        docs = self.groups()
+        vb_of = {}
+        for k, g in enumerate(docs):
+            for p in g:
+                vb_of[p] = k
+        for i in range(self.pages.count()):
+            it = self.pages.item(i)
+            txt = "Trang %d" % (i + 1)
+            if self.infos is None:
+                it.setText(txt)
+                continue
+            if i in self.blanks:
+                txt += "\n(trống – bỏ)" if self.drop_blank.isChecked() else "\n(trống)"
+                it.setBackground(QBrush(self.C_BLANK))
+            elif i in vb_of and docs[vb_of[i]][0] == i:
+                txt += "\n▶ VĂN BẢN %d" % (vb_of[i] + 1)
+                it.setBackground(QBrush(self.C_START))
+            else:
+                if i in vb_of:
+                    txt += "\nvb %d" % (vb_of[i] + 1)
+                it.setBackground(QBrush(Qt.transparent))
+            it.setText(txt)
+        if self.infos is None:
+            return
+        nb = len([i for i in self.blanks]) if self.drop_blank.isChecked() else 0
+        parts = []
+        for k, g in enumerate(docs):
+            parts.append("<b>VB%d</b>: %s (%d trang)" % (k + 1, self._ranges(g), len(g)))
+        self.summary.setText("Sẽ tách thành <b>%d văn bản</b>%s:&nbsp; %s" % (
+            len(docs), (", bỏ %d trang trống" % nb) if nb else "", " · ".join(parts)))
+
+    @staticmethod
+    def _ranges(pages):
+        out, s, prev = [], None, None
+        for p in pages:
+            if s is None:
+                s = prev = p
+            elif p == prev + 1:
+                prev = p
+            else:
+                out.append((s, prev)); s = prev = p
+        if s is not None:
+            out.append((s, prev))
+        return ", ".join(("tr %d" % (a + 1)) if a == b else ("tr %d–%d" % (a + 1, b + 1)) for a, b in out)
+
+    def pick_dir(self):
+        d = QFileDialog.getExistingDirectory(self, "Chọn thư mục lưu các văn bản", self.out_dir)
+        if d:
+            self.out_dir = d
+            self.same_dir.setChecked(False)
+            self.out_lbl.setText(d)
+
+    # ---- tách
+    def do_split(self):
+        docs = self.groups()
+        if not docs:
+            QMessageBox.information(self, APP_TITLE, "Không có trang nào để tách.")
+            return
+        base = os.path.splitext(os.path.basename(self.src_path or "van_ban"))[0]
+        out_dir = os.path.dirname(self.src_path) if (self.same_dir.isChecked() and self.src_path) else self.out_dir
+        out_dir = os.path.join(out_dir, base + "_tach")
+        try:
+            files = self.sp.save_docs(self.doc, docs, out_dir, base)
+        except Exception as ex:
+            QMessageBox.critical(self, APP_TITLE, "Tách thất bại:\n%s" % ex)
+            return
+        self.files = files
+        self.b_folder.setEnabled(True)
+        npages = sum(len(g) for _, g in files)
+        nb = len(self.blanks) if self.drop_blank.isChecked() else 0
+        lst = "<br>".join("• %s – %d trang" % (os.path.basename(p), len(g)) for p, g in files[:15])
+        if len(files) > 15:
+            lst += "<br>• ... và %d file nữa" % (len(files) - 15)
+        msg = ("Đã tách thành công <b>%d văn bản</b> (tổng %d trang)%s.<br>Lưu tại: %s<br><br>%s"
+               % (len(files), npages, (", đã bỏ <b>%d</b> trang trống" % nb) if nb else "", out_dir, lst))
+        box = QMessageBox(QMessageBox.Information, "Kết quả tách văn bản", msg, QMessageBox.Ok, self)
+        box.setTextFormat(Qt.RichText)
+        box.exec_()
+        self.win.last_dir = out_dir
+
+    def open_folder(self):
+        if not self.files:
+            return
+        p = self.files[0][0]
+        try:
+            import subprocess
+            if sys.platform.startswith("win"):
+                subprocess.Popen(["explorer", "/select,", os.path.normpath(p)])
+            else:
+                subprocess.Popen(["xdg-open", os.path.dirname(p)])
+        except Exception:
+            pass
+
+
+# =============================================================================
 #  CỬA SỔ CHÍNH
 # =============================================================================
 class MainWindow(QMainWindow):
@@ -769,7 +1134,10 @@ class MainWindow(QMainWindow):
         self.a_convert = self._act("Chuyển đổi", self.convert_dialog, "Ctrl+T",
                                    "Chuyển PDF ↔ Word / Excel, giữ nguyên bảng, chữ ký, con dấu",
                                    icon=QStyle.SP_BrowserReload)
-        for a in (self.a_open, self.a_save, self.a_convert):
+        self.a_split = self._act("Tách văn bản", self.split_dialog, "Ctrl+L",
+                                 "Tách file PDF scan gộp nhiều văn bản thành từng file, bỏ trang trống",
+                                 icon=QStyle.SP_FileDialogDetailedView)
+        for a in (self.a_open, self.a_save, self.a_convert, self.a_split):
             tb.addAction(a)
         tb.addSeparator()
         tb.addAction(self.a_undo)
@@ -863,6 +1231,7 @@ class MainWindow(QMainWindow):
         fm_.addAction(self.a_open)
         fm_.addAction(self.a_save)
         fm_.addAction(self.a_convert)
+        fm_.addAction(self.a_split)
         fm_.addSeparator()
         fm_.addAction(self._act("Thoát", self.close, "Ctrl+Q"))
         em = m.addMenu("&Sửa")
@@ -1119,6 +1488,9 @@ class MainWindow(QMainWindow):
 
     def convert_dialog(self):
         ConvertDialog(self).exec_()
+
+    def split_dialog(self):
+        SplitDialog(self).exec_()
 
     # ------------------------------------------------------------------ trang
     def page_rect(self):

@@ -204,6 +204,55 @@ def run(out_dir):
 
     step("Tu xoa trang trong (giu trang chi co './.', file goc khong doi)", blank_check)
 
+    def split_check():
+        import splitter
+        import hashlib
+
+        def header(d):
+            p = d.new_page()
+            p.insert_text((90, 60), "UBND QUẬN 1", fontname="F0", fontfile=path, fontsize=13)
+            p.draw_line((110, 82), (170, 82), width=0.6)
+            p.insert_text((300, 60), "CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM", fontname="F0", fontfile=path, fontsize=13)
+            p.insert_text((330, 76), "Độc lập - Tự do - Hạnh phúc", fontname="F0", fontfile=path, fontsize=14)
+            p.draw_line((330, 82), (470, 82), width=0.6)
+            for i in range(15):
+                p.insert_text((72, 170 + i * 19), "Nội dung văn bản dòng %d ............................" % i,
+                              fontname="F0", fontfile=path, fontsize=12)
+
+        def cont(d, n):
+            p = d.new_page()
+            p.insert_text((290, 40), str(n), fontname="F0", fontfile=path, fontsize=12)
+            for i in range(20):
+                p.insert_text((72, 80 + i * 19), "Tiếp theo dòng %d ................................" % i,
+                              fontname="F0", fontfile=path, fontsize=12)
+
+        vec = fitz.open()
+        header(vec); cont(vec, 2); vec.new_page()            # VB1: 2 trang + 1 trang trống
+        header(vec)                                           # VB2: 1 trang
+        header(vec); cont(vec, 2); vec.new_page(); cont(vec, 3)   # VB3: 3 trang (+ trống mặt sau)
+        # bản "scan": mỗi trang chỉ là ảnh (không có lớp chữ)
+        scan = fitz.open()
+        for pg in vec:
+            pm = pg.get_pixmap(dpi=120, colorspace=fitz.csGRAY)
+            sp = scan.new_page(width=pg.rect.width, height=pg.rect.height)
+            sp.insert_image(sp.rect, stream=pm.tobytes("png"))
+        res = []
+        for name, d in (("chu", vec), ("scan", scan)):
+            src = out("gop_%s.pdf" % name)
+            d.save(src)
+            h0 = hashlib.md5(open(src, "rb").read()).hexdigest()
+            sd = fitz.open(src)
+            infos = splitter.analyze(sd)
+            docs = splitter.plan(infos)
+            files = splitter.save_docs(sd, docs, out("tach_" + name), "gop_" + name)
+            sizes = [len(g) for _, g in files]
+            res.append("%s: %d van ban %s" % (name, len(files), sizes))
+            assert sizes == [2, 1, 3], "%s: tach sai %s" % (name, sizes)
+            assert hashlib.md5(open(src, "rb").read()).hexdigest() == h0, "file goc bi thay doi"
+        log("    " + " | ".join(res))
+
+    step("Tach file PDF gop thanh tung van ban (bo trang trong)", split_check)
+
     for f in ("kq.pdf", "kq_bocuc.docx", "kq.xlsx", "kq_anh.docx", "kq_lienmach.docx", "kq.png", "kq.jpg", "kq.txt"):
         p = out(f)
         log("    %s: %s" % (f, ("%d bytes" % os.path.getsize(p)) if os.path.exists(p) else "KHONG CO"))

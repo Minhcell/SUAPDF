@@ -52,6 +52,18 @@ Bấm nút **Chuyển đổi** → chọn kiểu → thêm file (chọn nhiều 
   giống cách soạn công văn trong Word; chữ ký, con dấu nằm dưới chữ nên bấm vào chữ để sửa không bị vướng ảnh.
 - Sau khi chuyển sang PDF có nút **"Mở PDF vừa tạo để sửa"**.
 
+## Tách văn bản (Ctrl+L) – file PDF scan gộp nhiều văn bản
+Bấm **Tách văn bản** → chọn file PDF gộp (hoặc dùng file đang mở) → phần mềm tự phân tích từng trang:
+- **Trang đầu mỗi văn bản** (ô xanh "▶ VĂN BẢN n"): nhận biết theo **Quốc hiệu** ở đầu trang
+  (PDF có chữ: đọc chữ "CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM"; PDF scan: nhận ra gạch chân dưới
+  "Độc lập - Tự do - Hạnh phúc"). Văn bản 1 trang, 2 trang hay nhiều trang đều tách đúng.
+- **Trang trống** (ô xám): tự bỏ – kể cả trang chỉ có bóng mép giấy, bụi, hoặc số trang.
+- Máy nhận sai? **Bấm vào trang** để đặt / bỏ chỗ bắt đầu văn bản; **chuột phải** để đánh dấu trang trống / giữ trang.
+- Cách khác: *Theo trang trống* (trang trắng ngăn cách văn bản) hoặc *Cố định N trang mỗi văn bản*.
+- **✂ Tách & lưu** → mỗi văn bản 1 file `TênGốc_VB01.pdf`, `..._VB02.pdf`... trong thư mục `TênGốc_tach`,
+  rồi báo: *"Đã tách thành công N văn bản (tổng X trang), đã bỏ Y trang trống"*.
+- File gốc không bị sửa; ảnh scan được chép nguyên, không giảm chất lượng.
+
 ## Vì sao không bị nhảy văn bản?
 Phần mềm **không chuyển cả trang sang dạng khác** mà chỉ xoá đúng chữ của dòng được sửa
 (không đụng tới đường kẻ bảng, hình ảnh, chữ ký) rồi ghi chữ mới vào đúng vị trí cũ.
