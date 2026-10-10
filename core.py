@@ -169,8 +169,11 @@ class FontManager:
         return f
 
 
-def font_tag(path):
-    return "SP" + hashlib.md5(path.encode("utf-8")).hexdigest()[:8]
+def font_tag(path, session=""):
+    """Tên font ghi vào PDF. Mỗi lần mở file dùng một mã phiên riêng, để KHÔNG BAO GIỜ
+    dùng lại font đã bị rút gọn (subset) trong file đã lưu trước đó – font rút gọn chỉ
+    còn các chữ cái cũ, gõ chữ mới sẽ hiện ô vuông."""
+    return "S" + session + hashlib.md5(path.encode("utf-8")).hexdigest()[:6]
 
 
 # ----------------------------------------------------------------------------
@@ -210,7 +213,8 @@ class Line:
 # Một số font (vd Times New Roman của Windows) dùng chung 1 hình chữ cho "-" và
 # gạch mềm U+00AD, nên khi đọc lại PDF dấu "-" bị trả về ký tự lạ (ẩn, không hiện).
 _NORM = {0x00AD: "-", 0x2010: "-", 0x2011: "-", 0x2012: "-", 0x2212: "-",
-         0x00A0: " ", 0x2007: " ", 0x202F: " ", 0xFEFF: None, 0x200B: None}
+         0x00A0: " ", 0x2007: " ", 0x202F: " ", 0xFEFF: None, 0x200B: None,
+         0x0000: None, 0xFFFD: None}  # ký tự hỏng (ô vuông) -> bỏ, để gõ lại
 
 
 def norm_text(s):
@@ -260,6 +264,7 @@ class PdfDocument:
         self.undo_stack, self.redo_stack = [], []
         self.modified = False
         self._lines = {}
+        self.session = os.urandom(3).hex()
 
     # ---- trạng thái
     def needs_pass(self):
@@ -356,7 +361,7 @@ class PdfDocument:
         path, fake_bold = fm.resolve(family, bold, italic)
         if path is None:
             raise RuntimeError("Không tìm thấy font: %s" % family)
-        tag = font_tag(path)
+        tag = font_tag(path, self.session)
         kw = dict(fontsize=size, fontname=tag, fontfile=path, color=color)
         if fake_bold:
             kw.update(render_mode=2, border_width=size * 0.035)

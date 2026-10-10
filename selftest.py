@@ -117,6 +117,23 @@ def run(out_dir):
     step("Luu JPG", lambda: doc.save_images(out("kq.jpg"), 100, "jpg"))
     step("Luu TXT", lambda: doc.save_txt(out("kq.txt")))
 
+    def roundtrip():
+        # mở lại file PDF đã lưu (font đã rút gọn) rồi sửa tiếp bằng chữ cái MỚI
+        src2 = out("kq.pdf")
+        for i, w in enumerate(["Minh", "Quỳnh Trâm Xuân", "Kỳ Duyên Phước Ẩu"]):
+            d2 = core.PdfDocument(src2)
+            ln2 = [l for l in d2.lines(0) if l.text.startswith("Họ và tên")][0]
+            d2.replace_line(0, ln2, "Họ và tên: " + w, fm, fam, ln2.size, ln2.color, False, False)
+            d2.add_text(0, 72, 450 + i * 16, "Lần %d: %s" % (i + 1, w), fm, fam, 13, (0, 0, 0), False, False)
+            src2 = out("kq_lan%d.pdf" % (i + 2))
+            d2.save_pdf(src2)
+            t = fitz.open(src2)[0].get_text()
+            bad = [c for c in t if c in "\x00\ufffd"]
+            assert not bad, "lan %d: co %d ky tu o vuong" % (i + 2, len(bad))
+            assert ("Họ và tên: " + w) in core.norm_text(t), "lan %d: khong thay chu moi" % (i + 2)
+
+    step("Mo lai file da luu, sua tiep nhieu lan (khong o vuong)", roundtrip)
+
     for f in ("kq.pdf", "kq_bocuc.docx", "kq_anh.docx", "kq_lienmach.docx", "kq.png", "kq.jpg", "kq.txt"):
         p = out(f)
         log("    %s: %s" % (f, ("%d bytes" % os.path.getsize(p)) if os.path.exists(p) else "KHONG CO"))
