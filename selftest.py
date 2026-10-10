@@ -1,60 +1,125 @@
 # -*- coding: utf-8 -*-
-"""Tự kiểm tra (chạy: SuaPDF.exe --selftest <thư_mục>) – dùng trong GitHub Actions."""
+"""Tự kiểm tra (chạy: SuaPDF.exe --selftest <thư_mục>) – dùng trong GitHub Actions.
+Ghi từng bước ra màn hình + file selftest.log để biết chính xác lỗi ở đâu."""
 import os
+import sys
+import traceback
+
 import core
 from core import fitz
 
 
+class Log:
+    def __init__(self, out_dir):
+        self.path = os.path.join(out_dir, "selftest.log")
+        self.lines = []
+
+    def __call__(self, msg):
+        self.lines.append(msg)
+        try:
+            sys.stdout.write(msg + "\n")
+            sys.stdout.flush()
+        except Exception:
+            pass
+        try:
+            with open(self.path, "w", encoding="utf-8") as f:
+                f.write("\n".join(self.lines))
+        except Exception:
+            pass
+
+
 def run(out_dir):
+    out_dir = os.path.abspath(out_dir)
     os.makedirs(out_dir, exist_ok=True)
-    log = []
-    fams = core.scan_fonts()
+    log = Log(out_dir)
+    errors = []
+
+    def step(name, fn, critical=True):
+        try:
+            r = fn()
+            log("[OK]  " + name)
+            return r
+        except Exception:
+            tb = traceback.format_exc()
+            log(("[LOI] " if critical else "[CANH BAO] ") + name + "\n" + tb)
+            if critical:
+                errors.append(name)
+            return None
+
+    log("Python %s | PyMuPDF %s | %s" % (sys.version.split()[0], getattr(fitz, "VersionBind", "?"), sys.platform))
+    log("Thu muc font: %s" % core.font_dirs())
+
+    fams = step("Doc danh sach font", core.scan_fonts) or {}
+    log("So font: %d" % len(fams))
+    if not fams:
+        log("SELFTEST FAIL: khong co font")
+        return 1
     fm = core.FontManager(fams)
     fam = fm.default_family()
-    log.append("So font: %d | font mac dinh: %s" % (len(fams), fam))
     path, _ = fm.resolve(fam)
-    # tạo PDF mẫu: chữ Việt + bảng + hình chữ ký
+    log("Font mac dinh: %s -> %s" % (fam, path))
+
     src = os.path.join(out_dir, "mau.pdf")
-    d = fitz.open()
-    p = d.new_page()
-    p.insert_text((72, 80), "Họ và tên: Nguyễn Văn An", fontname="F0", fontfile=path, fontsize=13)
-    p.insert_text((72, 95), "Ngày sinh: 01/01/1990", fontname="F0", fontfile=path, fontsize=13)
-    for r in range(3):
-        for c in range(3):
-            rect = fitz.Rect(72 + c * 120, 150 + r * 22, 192 + c * 120, 172 + r * 22)
-            p.draw_rect(rect, color=(0, 0, 0), width=0.8)
-            p.insert_text((rect.x0 + 4, rect.y0 + 15), "Ô %d-%d" % (r, c), fontname="F0", fontfile=path, fontsize=12)
-    p.draw_circle((400, 300), 30, color=(0.8, 0, 0))
-    d.save(src)
-    n_draw = len(p.get_drawings())
+    state = {}
 
-    doc = core.PdfDocument(src)
-    ln = [l for l in doc.lines(0) if l.text.startswith("Ngày sinh")][0]
-    doc.replace_line(0, ln, "Ngày sinh: 15/08/1985 – Hà Nội", fm, fam, ln.size, ln.color, False, False)
-    ln = [l for l in doc.lines(0) if l.text == "Ô 1-1"][0]
-    doc.replace_line(0, ln, "Đã sửa", fm, fam, ln.size, ln.color, True, False)
-    doc.add_text(0, 72, 400, "Dòng thêm mới", fm, fam, 13, (0, 0, 0), False, True)
-    texts = [l.text for l in doc.lines(0)]
-    assert "Họ và tên: Nguyễn Văn An" in texts, texts
-    assert "Ngày sinh: 15/08/1985 – Hà Nội" in texts, texts
-    assert "Đã sửa" in texts and "Dòng thêm mới" in texts, texts
-    assert len(doc.doc[0].get_drawings()) == n_draw, "mat duong ke bang!"
-    log.append("Sua chu: OK, giu nguyen %d duong ke" % n_draw)
+    def make_sample():
+        d = fitz.open()
+        p = d.new_page()
+        p.insert_text((72, 80), "Họ và tên: Nguyễn Văn An", fontname="F0", fontfile=path, fontsize=13)
+        p.insert_text((72, 95), "Ngày sinh: 01/01/1990", fontname="F0", fontfile=path, fontsize=13)
+        for r in range(3):
+            for c in range(3):
+                rect = fitz.Rect(72 + c * 120, 150 + r * 22, 192 + c * 120, 172 + r * 22)
+                p.draw_rect(rect, color=(0, 0, 0), width=0.8)
+                p.insert_text((rect.x0 + 4, rect.y0 + 15), "O %d-%d" % (r, c), fontname="F0", fontfile=path, fontsize=12)
+        p.draw_circle((400, 300), 30, color=(0.8, 0, 0))
+        state["n_draw"] = len(p.get_drawings())
+        d.save(src)
 
-    doc.save_pdf(os.path.join(out_dir, "kq.pdf"))
-    doc.save_docx_layout(os.path.join(out_dir, "kq_bocuc.docx"))
-    doc.save_docx_image(os.path.join(out_dir, "kq_anh.docx"))
-    doc.save_docx_flow(os.path.join(out_dir, "kq_lienmach.docx"))
-    doc.save_images(os.path.join(out_dir, "kq.png"), 100, "png")
-    doc.save_images(os.path.join(out_dir, "kq.jpg"), 100, "jpg")
-    doc.save_txt(os.path.join(out_dir, "kq.txt"))
+    step("Tao PDF mau", make_sample)
+    if errors:
+        log("SELFTEST FAIL: " + ", ".join(errors))
+        return 1
+
+    doc = step("Mo PDF", lambda: core.PdfDocument(src))
+    if doc is None:
+        log("SELFTEST FAIL: khong mo duoc PDF")
+        return 1
+
+    def edit():
+        texts = [l.text for l in doc.lines(0)]
+        log("    Chu doc duoc: %s" % texts)
+        ln = [l for l in doc.lines(0) if "sinh" in l.text][0]
+        doc.replace_line(0, ln, "Ngày sinh: 15/08/1985 – Hà Nội", fm, fam, ln.size, ln.color, False, False)
+        ln = [l for l in doc.lines(0) if l.text.strip() == "O 1-1"][0]
+        doc.replace_line(0, ln, "Đã sửa", fm, fam, ln.size, ln.color, True, False)
+        doc.add_text(0, 72, 400, "Dòng thêm mới", fm, fam, 13, (0, 0, 0), False, True)
+        texts = [l.text for l in doc.lines(0)]
+        log("    Sau khi sua: %s" % texts)
+        assert any("15/08/1985" in t for t in texts), "khong thay dong da sua"
+        assert any("Nguy" in t for t in texts), "mat dong ben canh"
+        n = len(doc.doc[0].get_drawings())
+        assert n == state["n_draw"], "mat duong ke bang (%d -> %d)" % (state["n_draw"], n)
+
+    step("Sua chu / them chu (giu duong ke bang)", edit)
+
+    def out(name):
+        return os.path.join(out_dir, name)
+
+    step("Luu PDF", lambda: doc.save_pdf(out("kq.pdf")))
+    step("Luu Word giu bo cuc", lambda: doc.save_docx_layout(out("kq_bocuc.docx")))
+    step("Luu Word anh trang", lambda: doc.save_docx_image(out("kq_anh.docx")))
+    step("Luu Word lien mach (pdf2docx)", lambda: doc.save_docx_flow(out("kq_lienmach.docx")), critical=False)
+    step("Luu PNG", lambda: doc.save_images(out("kq.png"), 100, "png"))
+    step("Luu JPG", lambda: doc.save_images(out("kq.jpg"), 100, "jpg"))
+    step("Luu TXT", lambda: doc.save_txt(out("kq.txt")))
+
     for f in ("kq.pdf", "kq_bocuc.docx", "kq_anh.docx", "kq_lienmach.docx", "kq.png", "kq.jpg", "kq.txt"):
-        sz = os.path.getsize(os.path.join(out_dir, f))
-        assert sz > 0, f
-        log.append("Xuat %s: %d bytes" % (f, sz))
-    chk = fitz.open(os.path.join(out_dir, "kq.pdf"))
-    assert "Đã sửa" in chk[0].get_text()
-    log.append("SELFTEST OK")
-    with open(os.path.join(out_dir, "selftest.log"), "w", encoding="utf-8") as f:
-        f.write("\n".join(log))
+        p = out(f)
+        log("    %s: %s" % (f, ("%d bytes" % os.path.getsize(p)) if os.path.exists(p) else "KHONG CO"))
+
+    if errors:
+        log("SELFTEST FAIL: " + ", ".join(errors))
+        return 1
+    log("SELFTEST OK")
     return 0

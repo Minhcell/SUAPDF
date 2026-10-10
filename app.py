@@ -969,13 +969,18 @@ class MainWindow(QMainWindow):
 
 def main():
     if len(sys.argv) > 2 and sys.argv[1] == "--selftest":
-        import selftest
         try:
+            import selftest
             return selftest.run(sys.argv[2])
-        except Exception:
+        except BaseException:
+            msg = "SELFTEST FAIL\n" + traceback.format_exc()
+            try:
+                print(msg)
+            except Exception:
+                pass
             os.makedirs(sys.argv[2], exist_ok=True)
-            with open(os.path.join(sys.argv[2], "selftest.log"), "w", encoding="utf-8") as f:
-                f.write("SELFTEST FAIL\n" + traceback.format_exc())
+            with open(os.path.join(sys.argv[2], "selftest.log"), "a", encoding="utf-8") as f:
+                f.write("\n" + msg)
             return 1
     if hasattr(Qt, "AA_EnableHighDpiScaling"):
         QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
