@@ -182,6 +182,28 @@ def run(out_dir):
 
     step("Chuyen doi PDF <-> Word/Excel (file goc khong doi, khong ghi de)", convert_check)
 
+    def blank_check():
+        import convert
+        d = fitz.open()
+        for txt in ("Trang A", None, "./.", None):
+            p = d.new_page()
+            if txt:
+                p.insert_text((72, 300), txt, fontsize=13)
+        d[1].insert_text((290, 815), "2", fontsize=10)  # trang trống chỉ có số trang ở chân
+        src = out("co_trang_trong.pdf")
+        d.save(src)
+        cdir = out("chuyen_nhieu")
+        res = []
+        for m in ("pdf2word", "pdf2excel"):
+            st = {}
+            o, _ = convert.convert_file(m, src, cdir, stats=st)
+            res.append((os.path.basename(o), st["blank"]))
+            assert st["blank"] == 2, "%s: xoa %d trang trong (dung la 2)" % (m, st["blank"])
+        assert fitz.open(src).page_count == 4, "file goc bi doi so trang!"
+        log("    %s" % res)
+
+    step("Tu xoa trang trong (giu trang chi co './.', file goc khong doi)", blank_check)
+
     for f in ("kq.pdf", "kq_bocuc.docx", "kq.xlsx", "kq_anh.docx", "kq_lienmach.docx", "kq.png", "kq.jpg", "kq.txt"):
         p = out(f)
         log("    %s: %s" % (f, ("%d bytes" % os.path.getsize(p)) if os.path.exists(p) else "KHONG CO"))

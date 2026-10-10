@@ -568,9 +568,53 @@ def detect_engines(kind):
     return found
 
 
-def convert_file(mode, src, out_dir=None, word_style="layout", dpi=200, log=None, doc=None):
-    """Chuyển 1 file. Trả về đường dẫn file kết quả. File gốc chỉ được ĐỌC.
-    doc: (tuỳ chọn) tài liệu PDF đang mở trong phần mềm – gồm cả phần đã sửa chưa lưu."""
+# =============================================================================
+#  TRANG TRỐNG
+# =============================================================================
+def is_blank_page(page):
+    """Trang trống: không có chữ / hình / đường kẻ nào ở phần thân trang
+    (bỏ qua vùng đầu trang & chân trang – vd trang trống chỉ còn số trang)."""
+    # còn BẤT KỲ chữ nào ở phần thân trang (kể cả "./.") -> không phải trang trống
+    try:
+        H = page.rect.height
+        for w in page.get_text("words"):
+            r = fitz.Rect(w[:4]) * page.rotation_matrix
+            cy = (r.y0 + r.y1) / 2
+            if w[4].strip() and H * 0.09 <= cy <= H * 0.91:
+                return False
+    except Exception:
+        return False
+    try:
+        import numpy as np
+        pm = page.get_pixmap(dpi=40, colorspace=fitz.csGRAY, alpha=False, annots=True)
+        arr = np.frombuffer(pm.samples, dtype=np.uint8).reshape(pm.height, pm.stride)[:, :pm.width]
+        band = int(pm.height * 0.09)
+        body = arr[band:pm.height - band]
+        ink = int((body < 200).sum())
+        return ink <= max(2, int(body.size * 0.0002))
+    except Exception:
+        txt = page.get_text("text").strip()
+        return not txt and not page.get_images() and not page.get_drawings()
+
+
+def drop_blank_pages(doc):
+    """Xoá trang trống trong doc (luôn giữ lại ít nhất 1 trang). Trả về số trang đã xoá."""
+    blank = [i for i in range(doc.page_count) if is_blank_page(doc[i])]
+    if len(blank) >= doc.page_count:
+        blank = blank[1:]
+    for i in reversed(blank):
+        doc.delete_page(i)
+    return len(blank)
+
+
+def convert_file(mode, src, out_dir=None, word_style="layout", dpi=200, log=None, doc=None,
+                 remove_blank=True, stats=None):
+    """Chuyển 1 file. Trả về (đường dẫn file kết quả, chương trình đã dùng). File gốc chỉ được ĐỌC.
+    doc: (tuỳ chọn) tài liệu PDF đang mở trong phần mềm – gồm cả phần đã sửa chưa lưu.
+    remove_blank: tự xoá trang trống (PDF nguồn khi chuyển sang Word/Excel; PDF kết quả khi Word/Excel -> PDF).
+    stats: dict (tuỳ chọn) nhận thêm thông tin, vd stats['blank'] = số trang trống đã xoá."""
+    stats = stats if stats is not None else {}
+    stats["blank"] = 0
     ext = dict((m[0], m[3]) for m in MODES)[mode]
     if out_dir:
         os.makedirs(out_dir, exist_ok=True)
@@ -585,6 +629,10 @@ def convert_file(mode, src, out_dir=None, word_style="layout", dpi=200, log=None
             doc = fitz.open(stream=data, filetype="pdf")
         if doc.needs_pass:
             raise RuntimeError("File PDF có mật khẩu – hãy mở bằng phần mềm rồi Lưu dạng Word/Excel.")
+        if remove_blank and doc.page_count > 1:
+            # làm trên BẢN SAO trong bộ nhớ – không đụng file gốc / tài liệu đang mở
+            doc = fitz.open(stream=doc.tobytes(), filetype="pdf")
+            stats["blank"] = drop_blank_pages(doc)
         if mode == "pdf2excel":
             pdf_to_excel(doc, out, dpi)
         elif word_style == "flow":
@@ -596,4 +644,18 @@ def convert_file(mode, src, out_dir=None, word_style="layout", dpi=200, log=None
             wordnative.pdf_to_docx(doc, out, dpi)
         return out, "PyMuPDF"
     engine = office_to_pdf(src, out, log)
+    if remove_blank:
+        try:
+            d = fitz.open(out)
+            n = drop_blank_pages(d) if d.page_count > 1 else 0
+            if n:
+                tmp = out + ".tmp"
+                d.save(tmp, garbage=3, deflate=True)
+                d.close()
+                os.replace(tmp, out)
+            else:
+                d.close()
+            stats["blank"] = n
+        except Exception:
+            pass
     return out, engine

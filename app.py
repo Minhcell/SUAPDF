@@ -393,10 +393,13 @@ class ConvertWorker(QThread):
     prog = pyqtSignal(int, int)
     result = pyqtSignal(list)
 
-    def __init__(self, mode, items, out_dir, word_style, dpi):
+    def __init__(self, mode, items, out_dir, word_style, dpi, remove_blank=True):
         super().__init__()
         self.mode, self.items, self.out_dir = mode, items, out_dir
         self.word_style, self.dpi = word_style, dpi
+        self.remove_blank = remove_blank
+        self.n_fail = 0
+        self.n_blank = 0
 
     def run(self):
         import convert
@@ -406,13 +409,19 @@ class ConvertWorker(QThread):
             self.prog.emit(i, n)
             self.line.emit("⏳ %s ..." % os.path.basename(src))
             try:
+                st = {}
                 out, engine = convert.convert_file(self.mode, src, self.out_dir, self.word_style,
-                                                   self.dpi, doc=doc)
+                                                   self.dpi, doc=doc, remove_blank=self.remove_blank,
+                                                   stats=st)
                 outs.append(out)
-                self.line.emit("✔ Xong: %s   (dùng %s)" % (out, engine))
+                nb = st.get("blank", 0)
+                self.n_blank += nb
+                self.line.emit("✔ [%d/%d] Xong: %s   (dùng %s%s)" % (
+                    i + 1, n, out, engine, (", đã xoá %d trang trống" % nb) if nb else ""))
             except Exception as ex:
+                self.n_fail += 1
                 msg = str(ex).strip() or type(ex).__name__
-                self.line.emit("✖ LỖI %s:\n   %s" % (os.path.basename(src), msg.replace("\n", "\n   ")))
+                self.line.emit("✖ [%d/%d] LỖI %s:\n   %s" % (i + 1, n, os.path.basename(src), msg.replace("\n", "\n   ")))
         self.prog.emit(n, n)
         self.result.emit(outs)
 
@@ -491,6 +500,11 @@ class ConvertDialog(QDialog):
         orow.addWidget(self.out_lbl, 1)
         lay.addLayout(orow)
         self.out_dir = win.last_dir
+        self.remove_blank = QCheckBox("Tự xoá trang trống trong file kết quả")
+        self.remove_blank.setChecked(True)
+        self.remove_blank.setToolTip("Word/Excel → PDF: xoá trang trắng trong PDF tạo ra.\n"
+                                     "PDF → Word/Excel: bỏ qua trang trắng của PDF (file gốc không đổi).")
+        lay.addWidget(self.remove_blank)
         note = QLabel("🔒 File gốc chỉ được đọc, KHÔNG bị sửa. Kết quả luôn là file mới "
                       "(trùng tên thì tự thêm (1), (2)...).")
         note.setStyleSheet("QLabel{background:#eef8ee;border:1px solid #b9dfb9;padding:6px;border-radius:4px;}")
@@ -652,7 +666,8 @@ class ConvertDialog(QDialog):
         self.prog.setWindowTitle(APP_TITLE)
         self.prog.setWindowModality(Qt.WindowModal)
         self.prog.setMinimumDuration(0)
-        self.worker = ConvertWorker(key, items, out_dir, self.word_style.currentData(), 200)
+        self.worker = ConvertWorker(key, items, out_dir, self.word_style.currentData(), 200,
+                                    self.remove_blank.isChecked())
         self.worker.line.connect(self.log.appendPlainText)
         self.worker.prog.connect(lambda a, b: (self.prog.setMaximum(b), self.prog.setValue(a)))
         self.worker.result.connect(self.done)
@@ -662,9 +677,23 @@ class ConvertDialog(QDialog):
         self.prog.close()
         self.b_go.setEnabled(True)
         self.outs = outs
-        self.log.appendPlainText("— Hoàn tất: %d/%d file —" % (len(outs), self.files.count()))
+        total = len(self.worker.items)
+        nfail = total - len(outs)
+        nblank = self.worker.n_blank
+        self.log.appendPlainText("— Hoàn tất: %d/%d file —" % (len(outs), total))
         self.b_folder.setEnabled(bool(outs))
         self.b_edit.setEnabled(any(o.lower().endswith(".pdf") for o in outs))
+        # báo kết quả tổng
+        msg = "Đã chuyển thành công <b>%d/%d</b> file." % (len(outs), total)
+        msg += "<br>Mỗi file gốc → 1 file kết quả riêng, cùng tên."
+        if nblank:
+            msg += "<br>Đã tự xoá <b>%d</b> trang trống." % nblank
+        if nfail:
+            msg += "<br><span style='color:#b3261e'>Lỗi: <b>%d</b> file – xem chi tiết trong ô nhật ký.</span>" % nfail
+        box = QMessageBox(QMessageBox.Information if not nfail else QMessageBox.Warning,
+                          "Kết quả chuyển đổi", msg, QMessageBox.Ok, self)
+        box.setTextFormat(Qt.RichText)
+        box.exec_()
 
     def open_folder(self):
         if not self.outs:

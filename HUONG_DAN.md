@@ -43,6 +43,11 @@ Bấm nút **Chuyển đổi** → chọn kiểu → thêm file (chọn nhiều 
 - 🔒 **File gốc chỉ được đọc, không bị sửa** (chuyển từ bản sao tạm). Kết quả luôn là file mới, trùng tên thì tự thêm (1), (2)...
 - Word/Excel → PDF cần máy có cài Microsoft Office, WPS Office hoặc LibreOffice (phần mềm tự dò, báo ngay trong hộp thoại).
 - PDF đang mở trong phần mềm sẽ được chuyển **kèm cả phần vừa sửa** chưa lưu.
+- **Chuyển nhiều file cùng lúc:** thêm bao nhiêu file cũng được → mỗi file gốc ra **1 file kết quả riêng, cùng tên**.
+  Xong sẽ báo: *"Đã chuyển thành công X/Y file"*, số trang trống đã xoá và file nào bị lỗi (nếu có).
+- **Tự xoá trang trống** (bật sẵn, bỏ chọn nếu không muốn): Word/Excel → PDF xoá trang trắng trong PDF tạo ra;
+  PDF → Word/Excel bỏ qua trang trắng của PDF. Trang chỉ còn số trang ở chân trang cũng tính là trống;
+  trang còn bất kỳ chữ nào (kể cả "./.") hoặc hình, chữ ký, con dấu thì **luôn được giữ**.
 - Bản Word: phần chữ nằm song song (Tên cơ quan | Quốc hiệu, Nơi nhận | Chữ ký) được đặt trong **bảng ẩn viền**
   giống cách soạn công văn trong Word; chữ ký, con dấu nằm dưới chữ nên bấm vào chữ để sửa không bị vướng ảnh.
 - Sau khi chuyển sang PDF có nút **"Mở PDF vừa tạo để sửa"**.
