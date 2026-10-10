@@ -1,0 +1,66 @@
+name: Build SuaPDF.exe
+
+on:
+  push:
+    branches: [ main, master ]
+    tags: [ 'v*' ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Cai thu vien
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller==6.22.3
+
+      - name: Kiem tra ma nguon (chay thu loi xu ly PDF)
+        run: python app.py --selftest selftest_src
+
+      - name: Dong goi thanh 1 file exe
+        run: >
+          pyinstaller --noconfirm --clean --onefile --windowed
+          --name SuaPDF --icon icon.ico
+          --collect-submodules pdf2docx
+          --hidden-import selftest
+          --exclude-module tkinter --exclude-module matplotlib
+          --exclude-module scipy --exclude-module pandas
+          --exclude-module PyQt5.QtWebEngineWidgets --exclude-module PyQt5.QtQml
+          app.py
+
+      - name: Chay thu file exe vua build
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath "dist\SuaPDF.exe" -ArgumentList "--selftest","selftest_exe" -Wait -PassThru
+          Get-Content selftest_exe\selftest.log
+          if ($p.ExitCode -ne 0) { exit 1 }
+
+      - name: Gom file
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path out | Out-Null
+          Copy-Item dist\SuaPDF.exe out\
+          Copy-Item HUONG_DAN.md out\
+          Copy-Item selftest_exe\kq_bocuc.docx out\VD_word_giu_bo_cuc.docx
+          Copy-Item selftest_exe\kq.pdf out\VD_pdf_da_sua.pdf
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SuaPDF-Windows
+          path: out/
+
+      - name: Tao Release (khi push tag v*)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: out/SuaPDF.exe
