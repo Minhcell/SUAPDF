@@ -186,7 +186,7 @@ class Line:
             spans = ln["spans"]
         self.spans = spans
         self.bbox = fitz.Rect(ln["bbox"])
-        self.text = "".join(s["text"] for s in ln["spans"]).rstrip()
+        self.text = norm_text("".join(s["text"] for s in ln["spans"])).rstrip()
         s0 = max(spans, key=lambda s: len(s["text"].strip()))
         self.size = round(s0["size"] * 2) / 2
         c = s0.get("color", 0)
@@ -205,6 +205,16 @@ class Line:
         self.horizontal = abs(d.x - 1) < 1e-3 and abs(d.y) < 1e-3
         # chữ ẩn (lớp OCR của bản scan): chữ thấy được thực ra là ảnh
         self.invisible = all(s.get("alpha", 255) == 0 for s in spans)
+
+
+# Một số font (vd Times New Roman của Windows) dùng chung 1 hình chữ cho "-" và
+# gạch mềm U+00AD, nên khi đọc lại PDF dấu "-" bị trả về ký tự lạ (ẩn, không hiện).
+_NORM = {0x00AD: "-", 0x2010: "-", 0x2011: "-", 0x2012: "-", 0x2212: "-",
+         0x00A0: " ", 0x2007: " ", 0x202F: " ", 0xFEFF: None, 0x200B: None}
+
+
+def norm_text(s):
+    return s.translate(_NORM)
 
 
 def clean_font_name(name):
@@ -592,7 +602,7 @@ def _docx_build(doc, out, dpi, with_text, progress=None):
                     fw = min(fw, max(W - x, width + 2))
                     runs = []
                     for k, s in enumerate(spans):
-                        t = s["text"]
+                        t = norm_text(s["text"])
                         if k == 0:
                             t = t.lstrip()
                         if k == len(spans) - 1:

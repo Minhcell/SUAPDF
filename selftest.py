@@ -88,14 +88,17 @@ def run(out_dir):
 
     def edit():
         texts = [l.text for l in doc.lines(0)]
-        log("    Chu doc duoc: %s" % texts)
+        log("    Chu doc duoc: %s" % ascii(texts))
         ln = [l for l in doc.lines(0) if "sinh" in l.text][0]
         doc.replace_line(0, ln, "Ngày sinh: 15/08/1985 – Hà Nội", fm, fam, ln.size, ln.color, False, False)
-        ln = [l for l in doc.lines(0) if l.text.strip() == "O 1-1"][0]
+        cell = [l for l in doc.lines(0) if l.bbox.contains(fitz.Point(205, 183))]
+        assert cell, "khong tim thay dong chu trong o bang giua"
+        assert cell[0].text.strip() == "O 1-1", "doc sai chu trong o: %s" % ascii(cell[0].text)
+        ln = cell[0]
         doc.replace_line(0, ln, "Đã sửa", fm, fam, ln.size, ln.color, True, False)
         doc.add_text(0, 72, 400, "Dòng thêm mới", fm, fam, 13, (0, 0, 0), False, True)
         texts = [l.text for l in doc.lines(0)]
-        log("    Sau khi sua: %s" % texts)
+        log("    Sau khi sua: %s" % ascii(texts))
         assert any("15/08/1985" in t for t in texts), "khong thay dong da sua"
         assert any("Nguy" in t for t in texts), "mat dong ben canh"
         n = len(doc.doc[0].get_drawings())
