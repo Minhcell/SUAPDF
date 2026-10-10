@@ -299,13 +299,16 @@ SAVE_OPTIONS = [
     ("pdf", "PDF (.pdf) – giữ nguyên 100% như bản gốc (khuyên dùng)",
      "Bảng, khung, đường kẻ, hình ảnh, chữ ký giữ nguyên vị trí. Chỉ những dòng bạn sửa được thay chữ.", ".pdf"),
     ("docx_layout", "Word (.docx) – giữ nguyên bố cục, sửa được chữ",
-     "Khung bảng, đường kẻ, chữ ký, con dấu được giữ làm nền cố định; từng dòng chữ đặt đúng toạ độ cũ "
-     "nên KHÔNG bị nhảy văn bản. Mở bằng Word vẫn sửa được chữ.", ".docx"),
+     "Văn bản Word BÌNH THƯỜNG (không khung/text box): đoạn văn đặt đúng vị trí cũ, bảng thành bảng Word thật "
+     "(gộp ô, màu nền, viền), chữ ký và con dấu là ảnh đặt đúng chỗ, nằm dưới chữ. Gõ thêm chữ chảy như Word.", ".docx"),
     ("docx_flow", "Word (.docx) – văn bản liền mạch (chuyển đổi tự động)",
      "Chữ chảy tự do như Word gõ tay, bảng thành bảng Word. Dễ sửa nhiều nhưng CÓ THỂ lệch nhẹ "
      "so với PDF gốc (nhất là khung chữ ký, con dấu).", ".docx"),
     ("docx_image", "Word (.docx) – ảnh trang (giống hệt, không sửa chữ)",
      "Mỗi trang là một ảnh nét cao đặt vào Word. Giống bản gốc tuyệt đối nhưng không sửa được chữ.", ".docx"),
+    ("xlsx", "Excel (.xlsx) – giữ nguyên bố cục",
+     "Mỗi trang PDF là 1 trang tính. Bảng thành ô Excel (gộp ô, viền, màu nền), chữ đặt đúng vị trí, "
+     "chữ ký / con dấu tròn là ảnh đặt đúng chỗ. In ra vừa 1 trang như bản gốc.", ".xlsx"),
     ("png", "Ảnh PNG (mỗi trang 1 ảnh)", "Ảnh nét, phù hợp đính kèm/gửi Zalo.", ".png"),
     ("jpg", "Ảnh JPG (mỗi trang 1 ảnh)", "Ảnh nhẹ hơn PNG.", ".jpg"),
     ("txt", "Văn bản thuần (.txt)", "Chỉ lấy chữ, không giữ định dạng.", ".txt"),
@@ -359,7 +362,7 @@ class SaveDialog(QDialog):
         i = self.group.checkedId()
         key, label, desc, ext = SAVE_OPTIONS[i]
         self.desc.setText(desc)
-        self.dpi.setEnabled(key in ("docx_layout", "docx_image", "png", "jpg"))
+        self.dpi.setEnabled(key in ("docx_layout", "docx_image", "xlsx", "png", "jpg"))
 
     def choice(self):
         return SAVE_OPTIONS[self.group.checkedId()], int(self.dpi.currentText()), self.open_after.isChecked()
@@ -380,6 +383,272 @@ class Worker(QThread):
         except Exception:
             self.done.emit(None, traceback.format_exc())
 
+
+
+# =============================================================================
+#  HỘP THOẠI CHUYỂN ĐỔI  PDF <-> WORD / EXCEL
+# =============================================================================
+class ConvertWorker(QThread):
+    line = pyqtSignal(str)
+    prog = pyqtSignal(int, int)
+    result = pyqtSignal(list)
+
+    def __init__(self, mode, items, out_dir, word_style, dpi):
+        super().__init__()
+        self.mode, self.items, self.out_dir = mode, items, out_dir
+        self.word_style, self.dpi = word_style, dpi
+
+    def run(self):
+        import convert
+        outs = []
+        n = len(self.items)
+        for i, (src, doc) in enumerate(self.items):
+            self.prog.emit(i, n)
+            self.line.emit("⏳ %s ..." % os.path.basename(src))
+            try:
+                out, engine = convert.convert_file(self.mode, src, self.out_dir, self.word_style,
+                                                   self.dpi, doc=doc)
+                outs.append(out)
+                self.line.emit("✔ Xong: %s   (dùng %s)" % (out, engine))
+            except Exception as ex:
+                msg = str(ex).strip() or type(ex).__name__
+                self.line.emit("✖ LỖI %s:\n   %s" % (os.path.basename(src), msg.replace("\n", "\n   ")))
+        self.prog.emit(n, n)
+        self.result.emit(outs)
+
+
+class ConvertDialog(QDialog):
+    def __init__(self, win):
+        super().__init__(win)
+        import convert
+        self.convert = convert
+        self.win = win
+        self.outs = []
+        self.setWindowTitle("Chuyển đổi file – PDF ↔ Word / Excel")
+        self.resize(720, 600)
+        self.setAcceptDrops(True)
+        lay = QVBoxLayout(self)
+
+        lay.addWidget(QLabel("<b>1. Chọn kiểu chuyển đổi:</b>"))
+        row = QHBoxLayout()
+        self.mode_group = QButtonGroup(self)
+        for i, (key, label, exts, out_ext) in enumerate(convert.MODES):
+            rb = QRadioButton(label)
+            rb.setProperty("key", key)
+            self.mode_group.addButton(rb, i)
+            row.addWidget(rb)
+        row.addStretch(1)
+        lay.addLayout(row)
+        self.word_row = QHBoxLayout()
+        self.word_row.addWidget(QLabel("   Kiểu Word:"))
+        self.word_style = QComboBox()
+        self.word_style.addItem("Giữ nguyên bố cục – văn bản Word bình thường (khuyên dùng)", "layout")
+        self.word_style.addItem("Liền mạch – chuyển đổi tự động (có thể lệch nhẹ)", "flow")
+        self.word_row.addWidget(self.word_style, 1)
+        lay.addLayout(self.word_row)
+        self.engine_lbl = QLabel()
+        self.engine_lbl.setWordWrap(True)
+        lay.addWidget(self.engine_lbl)
+
+        lay.addWidget(QLabel("<b>2. Chọn file</b> (có thể chọn nhiều file, hoặc kéo thả file vào đây):"))
+        self.files = QListWidget()
+        self.files.setSelectionMode(QListWidget.ExtendedSelection)
+        lay.addWidget(self.files, 1)
+        fr = QHBoxLayout()
+        b_add = QToolButton(); b_add.setText(" Thêm file... "); b_add.clicked.connect(self.add_files)
+        b_rm = QToolButton(); b_rm.setText(" Bỏ file đã chọn "); b_rm.clicked.connect(self.remove_sel)
+        b_clr = QToolButton(); b_clr.setText(" Xoá danh sách "); b_clr.clicked.connect(self.files.clear)
+        for b in (b_add, b_rm, b_clr):
+            fr.addWidget(b)
+        fr.addStretch(1)
+        lay.addLayout(fr)
+
+        lay.addWidget(QLabel("<b>3. Nơi lưu file kết quả:</b>"))
+        orow = QHBoxLayout()
+        self.same_dir = QCheckBox("Cùng thư mục với file gốc")
+        self.same_dir.setChecked(True)
+        self.out_lbl = QLabel("")
+        b_dir = QToolButton(); b_dir.setText(" Chọn thư mục khác... "); b_dir.clicked.connect(self.pick_dir)
+        self.same_dir.toggled.connect(lambda on: self.out_lbl.setText("" if on else self.out_dir))
+        orow.addWidget(self.same_dir)
+        orow.addWidget(b_dir)
+        orow.addWidget(self.out_lbl, 1)
+        lay.addLayout(orow)
+        self.out_dir = win.last_dir
+        note = QLabel("🔒 File gốc chỉ được đọc, KHÔNG bị sửa. Kết quả luôn là file mới "
+                      "(trùng tên thì tự thêm (1), (2)...).")
+        note.setStyleSheet("QLabel{background:#eef8ee;border:1px solid #b9dfb9;padding:6px;border-radius:4px;}")
+        note.setWordWrap(True)
+        lay.addWidget(note)
+
+        self.log = QPlainTextEdit()
+        self.log.setReadOnly(True)
+        self.log.setMaximumHeight(150)
+        lay.addWidget(self.log)
+        bb = QHBoxLayout()
+        self.b_go = QToolButton(); self.b_go.setText("  ▶ Chuyển đổi  ")
+        f = self.b_go.font(); f.setBold(True); self.b_go.setFont(f)
+        self.b_go.clicked.connect(self.start)
+        self.b_folder = QToolButton(); self.b_folder.setText(" Mở thư mục kết quả ")
+        self.b_folder.clicked.connect(self.open_folder)
+        self.b_edit = QToolButton(); self.b_edit.setText(" Mở PDF vừa tạo để sửa ")
+        self.b_edit.clicked.connect(self.edit_result)
+        b_close = QToolButton(); b_close.setText(" Đóng "); b_close.clicked.connect(self.reject)
+        for b in (self.b_go, self.b_folder, self.b_edit):
+            bb.addWidget(b)
+        bb.addStretch(1)
+        bb.addWidget(b_close)
+        lay.addLayout(bb)
+        self.b_folder.setEnabled(False)
+        self.b_edit.setEnabled(False)
+
+        self.mode_group.buttonClicked.connect(lambda *_: self.mode_changed())
+        self.mode_group.button(0).setChecked(True)
+        self.mode_changed()
+
+    def mode(self):
+        return self.convert.MODES[self.mode_group.checkedId()]
+
+    def mode_changed(self):
+        key, label, exts, out_ext = self.mode()
+        is_word = key == "pdf2word"
+        for i in range(self.word_row.count()):
+            w = self.word_row.itemAt(i).widget()
+            if w:
+                w.setVisible(is_word)
+        if key in ("word2pdf", "excel2pdf"):
+            kind = "word" if key == "word2pdf" else "excel"
+            eng = self.convert.detect_engines(kind)
+            if eng:
+                self.engine_lbl.setText("Sẽ dùng: <b>%s</b> trên máy để chuyển → giữ đúng 100%% bố cục "
+                                        "như khi in từ %s." % (eng[0], "Word" if kind == "word" else "Excel"))
+                self.engine_lbl.setStyleSheet("color:#1a6b1a")
+            else:
+                self.engine_lbl.setText("⚠ Máy chưa thấy Microsoft Office / WPS / LibreOffice. Cần cài một trong các "
+                                        "chương trình này để chuyển %s sang PDF đúng bố cục."
+                                        % ("Word" if kind == "word" else "Excel"))
+                self.engine_lbl.setStyleSheet("color:#b3261e")
+        elif key == "pdf2excel":
+            self.engine_lbl.setText("Bảng → ô Excel (gộp ô, viền, màu nền); chữ đặt đúng vị trí; "
+                                    "chữ ký, con dấu tròn → ảnh đặt đúng chỗ. Mỗi trang PDF = 1 trang tính.")
+            self.engine_lbl.setStyleSheet("color:#333")
+        else:
+            self.engine_lbl.setText("Văn bản Word bình thường: đoạn văn đúng vị trí, bảng Word thật, "
+                                    "chữ ký / con dấu là ảnh đặt đúng chỗ (nằm dưới chữ).")
+            self.engine_lbl.setStyleSheet("color:#333")
+        # giữ lại các file hợp lệ với kiểu mới
+        keep = []
+        for i in range(self.files.count()):
+            it = self.files.item(i)
+            if os.path.splitext(it.data(Qt.UserRole))[1].lower() in exts:
+                keep.append((it.text(), it.data(Qt.UserRole), it.data(Qt.UserRole + 1)))
+        self.files.clear()
+        for t, p, cur in keep:
+            self._add_item(p, cur)
+        if not keep and key in ("pdf2word", "pdf2excel") and self.win.pdf:
+            self._add_item(self.win.pdf.path, True)
+
+    def _add_item(self, path, current=False):
+        for i in range(self.files.count()):
+            if self.files.item(i).data(Qt.UserRole) == path:
+                return
+        it = QListWidgetItem(path + ("   (đang mở – gồm cả phần đã sửa)" if current else ""))
+        it.setData(Qt.UserRole, path)
+        it.setData(Qt.UserRole + 1, bool(current))
+        self.files.addItem(it)
+
+    def add_files(self):
+        key, label, exts, out_ext = self.mode()
+        pat = " ".join("*" + e for e in exts)
+        name = {"pdf2word": "PDF", "pdf2excel": "PDF", "word2pdf": "Word", "excel2pdf": "Excel"}[key]
+        paths, _ = QFileDialog.getOpenFileNames(self, "Chọn file %s" % name, self.win.last_dir,
+                                                "%s (%s)" % (name, pat))
+        for p in paths:
+            self._add_item(os.path.normpath(p))
+        if paths:
+            self.win.last_dir = os.path.dirname(paths[0])
+
+    def remove_sel(self):
+        for it in self.files.selectedItems():
+            self.files.takeItem(self.files.row(it))
+
+    def pick_dir(self):
+        d = QFileDialog.getExistingDirectory(self, "Chọn thư mục lưu kết quả", self.out_dir)
+        if d:
+            self.out_dir = d
+            self.same_dir.setChecked(False)
+            self.out_lbl.setText(d)
+
+    def dragEnterEvent(self, e):
+        if e.mimeData().hasUrls():
+            e.acceptProposedAction()
+
+    def dropEvent(self, e):
+        key, label, exts, out_ext = self.mode()
+        bad = 0
+        for u in e.mimeData().urls():
+            p = os.path.normpath(u.toLocalFile())
+            if os.path.splitext(p)[1].lower() in exts:
+                self._add_item(p)
+            else:
+                bad += 1
+        if bad:
+            self.log.appendPlainText("Bỏ qua %d file không đúng loại cho kiểu '%s'." % (bad, label))
+
+    def start(self):
+        if self.files.count() == 0:
+            QMessageBox.information(self, APP_TITLE, "Hãy thêm ít nhất 1 file.")
+            return
+        key = self.mode()[0]
+        items = []
+        for i in range(self.files.count()):
+            it = self.files.item(i)
+            p = it.data(Qt.UserRole)
+            doc = None
+            if it.data(Qt.UserRole + 1) and self.win.pdf:
+                self.win.view.close_editor(True)
+                doc = core.fitz.open(stream=self.win.pdf.doc.tobytes(), filetype="pdf")
+            items.append((p, doc))
+        out_dir = None if self.same_dir.isChecked() else self.out_dir
+        self.b_go.setEnabled(False)
+        self.log.appendPlainText("— Bắt đầu chuyển %d file —" % len(items))
+        self.prog = QProgressDialog("Đang chuyển đổi...", None, 0, len(items), self)
+        self.prog.setWindowTitle(APP_TITLE)
+        self.prog.setWindowModality(Qt.WindowModal)
+        self.prog.setMinimumDuration(0)
+        self.worker = ConvertWorker(key, items, out_dir, self.word_style.currentData(), 200)
+        self.worker.line.connect(self.log.appendPlainText)
+        self.worker.prog.connect(lambda a, b: (self.prog.setMaximum(b), self.prog.setValue(a)))
+        self.worker.result.connect(self.done)
+        self.worker.start()
+
+    def done(self, outs):
+        self.prog.close()
+        self.b_go.setEnabled(True)
+        self.outs = outs
+        self.log.appendPlainText("— Hoàn tất: %d/%d file —" % (len(outs), self.files.count()))
+        self.b_folder.setEnabled(bool(outs))
+        self.b_edit.setEnabled(any(o.lower().endswith(".pdf") for o in outs))
+
+    def open_folder(self):
+        if not self.outs:
+            return
+        p = self.outs[-1]
+        try:
+            if sys.platform.startswith("win"):
+                import subprocess
+                subprocess.Popen(["explorer", "/select,", os.path.normpath(p)])
+            else:
+                import subprocess
+                subprocess.Popen(["xdg-open", os.path.dirname(p)])
+        except Exception:
+            pass
+
+    def edit_result(self):
+        pdfs = [o for o in self.outs if o.lower().endswith(".pdf")]
+        if pdfs and self.win.confirm_discard():
+            self.accept()
+            self.win.open_file(pdfs[-1])
 
 # =============================================================================
 #  CỬA SỔ CHÍNH
@@ -432,7 +701,10 @@ class MainWindow(QMainWindow):
                                 icon=QStyle.SP_DialogSaveButton)
         self.a_undo = self._act("Hoàn tác", self.undo, "Ctrl+Z", icon=QStyle.SP_ArrowBack)
         self.a_redo = self._act("Làm lại", self.redo, "Ctrl+Y", icon=QStyle.SP_ArrowForward)
-        for a in (self.a_open, self.a_save):
+        self.a_convert = self._act("Chuyển đổi", self.convert_dialog, "Ctrl+T",
+                                   "Chuyển PDF ↔ Word / Excel, giữ nguyên bảng, chữ ký, con dấu",
+                                   icon=QStyle.SP_BrowserReload)
+        for a in (self.a_open, self.a_save, self.a_convert):
             tb.addAction(a)
         tb.addSeparator()
         tb.addAction(self.a_undo)
@@ -525,6 +797,7 @@ class MainWindow(QMainWindow):
         fm_ = m.addMenu("&Tệp")
         fm_.addAction(self.a_open)
         fm_.addAction(self.a_save)
+        fm_.addAction(self.a_convert)
         fm_.addSeparator()
         fm_.addAction(self._act("Thoát", self.close, "Ctrl+Q"))
         em = m.addMenu("&Sửa")
@@ -706,7 +979,7 @@ class MainWindow(QMainWindow):
         (key, label, desc, ext), dpi, open_after = dlg.choice()
         base = os.path.splitext(os.path.basename(self.pdf.path))[0]
         sugg = os.path.join(self.last_dir, base + "_da_sua" + ext)
-        filt = {".pdf": "PDF (*.pdf)", ".docx": "Word (*.docx)", ".png": "Ảnh PNG (*.png)",
+        filt = {".pdf": "PDF (*.pdf)", ".docx": "Word (*.docx)", ".xlsx": "Excel (*.xlsx)", ".png": "Ảnh PNG (*.png)",
                 ".jpg": "Ảnh JPG (*.jpg)", ".txt": "Văn bản (*.txt)"}[ext]
         out, _ = QFileDialog.getSaveFileName(self, "Lưu thành", sugg, filt)
         if not out:
@@ -723,6 +996,8 @@ class MainWindow(QMainWindow):
                 return [pdf.save_docx_layout(out, dpi, progress)]
             if key == "docx_image":
                 return [pdf.save_docx_image(out, dpi, progress)]
+            if key == "xlsx":
+                return [pdf.save_xlsx(out, dpi, progress)]
             if key == "docx_flow":
                 pdf.save_docx_flow(out, progress)
                 return [out]
@@ -776,6 +1051,9 @@ class MainWindow(QMainWindow):
             pdf.modified = False
             self.update_title()
         return True
+
+    def convert_dialog(self):
+        ConvertDialog(self).exec_()
 
     # ------------------------------------------------------------------ trang
     def page_rect(self):

@@ -3,3 +3,6 @@ PyQt5==5.15.11
 fonttools==4.65.0
 python-docx==1.2.0
 pdf2docx==0.5.13
+openpyxl==3.1.5
+Pillow==12.3.0
+pywin32>=306; sys_platform == "win32"

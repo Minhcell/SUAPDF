@@ -134,7 +134,55 @@ def run(out_dir):
 
     step("Mo lai file da luu, sua tiep nhieu lan (khong o vuong)", roundtrip)
 
-    for f in ("kq.pdf", "kq_bocuc.docx", "kq_anh.docx", "kq_lienmach.docx", "kq.png", "kq.jpg", "kq.txt"):
+    def excel_check():
+        import openpyxl
+        doc.save_xlsx(out("kq.xlsx"))
+        wb = openpyxl.load_workbook(out("kq.xlsx"))
+        ws = wb.worksheets[0]
+        vals = [str(c.value) for r in ws.iter_rows() for c in r if c.value]
+        log("    Excel: %d o co chu, %d anh, %d vung gop o" % (len(vals), len(ws._images), len(ws.merged_cells.ranges)))
+        assert any("Đã sửa" in v for v in vals), "Excel thieu chu da sua"
+        assert any("Nguy" in v or "Họ và tên" in v for v in vals), "Excel thieu dong chu"
+        assert len(ws._images) >= 1, "Excel thieu anh (con dau)"
+
+    step("Luu Excel giu bo cuc (bang -> o, con dau -> anh)", excel_check)
+
+    def word_normal_check():
+        import zipfile
+        x = zipfile.ZipFile(out("kq_bocuc.docx")).read("word/document.xml").decode("utf-8")
+        assert "framePr" not in x, "Word van con khung (text box)"
+        assert "<w:tbl>" in x or "<w:tbl " in x, "Word thieu bang"
+        assert "wp:anchor" in x, "Word thieu anh con dau/chu ky"
+        assert "Đã sửa" in x, "Word thieu chu da sua"
+
+    step("Word la van ban binh thuong (khong khung, co bang that, co anh dau)", word_normal_check)
+
+    def convert_check():
+        import hashlib
+        import convert
+        src = out("kq.pdf")
+        h0 = hashlib.md5(open(src, "rb").read()).hexdigest()
+        cdir = out("chuyen")
+        a, _ = convert.convert_file("pdf2word", src, cdir)
+        b, _ = convert.convert_file("pdf2excel", src, cdir)
+        c, _ = convert.convert_file("pdf2word", src, cdir)
+        assert os.path.getsize(a) > 0 and os.path.getsize(b) > 0
+        assert a != c, "ghi de file ket qua!"
+        assert hashlib.md5(open(src, "rb").read()).hexdigest() == h0, "file goc bi thay doi!"
+        log("    -> %s | %s | %s" % (os.path.basename(a), os.path.basename(b), os.path.basename(c)))
+        for kind, f in (("word", a), ("excel", b)):
+            eng = convert.detect_engines(kind)
+            if not eng:
+                log("    [BO QUA] %s -> PDF: may build khong co Office/LibreOffice" % kind)
+                continue
+            h1 = hashlib.md5(open(f, "rb").read()).hexdigest()
+            p, used = convert.convert_file(kind + "2pdf", f, cdir)
+            assert hashlib.md5(open(f, "rb").read()).hexdigest() == h1, "file %s goc bi thay doi" % kind
+            log("    %s -> PDF bang %s: %s" % (kind, used, os.path.basename(p)))
+
+    step("Chuyen doi PDF <-> Word/Excel (file goc khong doi, khong ghi de)", convert_check)
+
+    for f in ("kq.pdf", "kq_bocuc.docx", "kq.xlsx", "kq_anh.docx", "kq_lienmach.docx", "kq.png", "kq.jpg", "kq.txt"):
         p = out(f)
         log("    %s: %s" % (f, ("%d bytes" % os.path.getsize(p)) if os.path.exists(p) else "KHONG CO"))
 

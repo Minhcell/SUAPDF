@@ -480,10 +480,15 @@ class PdfDocument:
         return _docx_build(self.doc, out, dpi, with_text=False, progress=progress)
 
     def save_docx_layout(self, out, dpi=200, progress=None):
-        """Word giữ nguyên bố cục + sửa được chữ:
-        nền trang (khung bảng, đường kẻ, hình, chữ ký) là ảnh nằm dưới chữ,
-        từng dòng chữ đặt đúng toạ độ cũ bằng khung (frame) -> không nhảy."""
-        return _docx_build(self.doc, out, dpi, with_text=True, progress=progress)
+        """Word giữ nguyên bố cục, sửa như Word bình thường:
+        đoạn văn thường + bảng Word thật (không frame/text box); chữ ký, con dấu là ảnh đặt đúng chỗ."""
+        import wordnative
+        return wordnative.pdf_to_docx(self.doc, out, dpi, progress)
+
+    def save_xlsx(self, out, dpi=200, progress=None):
+        """Excel giữ bố cục: bảng thành ô Excel, chữ ký / con dấu là ảnh đặt đúng chỗ."""
+        import convert
+        return convert.pdf_to_excel(self.doc, out, dpi, progress)
 
 
 # ----------------------------------------------------------------------------

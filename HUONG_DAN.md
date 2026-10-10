@@ -23,11 +23,29 @@ Lần chạy đầu phần mềm đọc danh sách font của máy (vài giây),
 | Định dạng | Ghi chú |
 |---|---|
 | **PDF** (khuyên dùng) | Giữ nguyên 100%: bảng, khung, chữ ký, con dấu không xê dịch |
-| **Word – giữ nguyên bố cục, sửa được chữ** | Khung bảng/chữ ký/con dấu làm nền cố định, từng dòng chữ đặt đúng toạ độ cũ → không nhảy văn bản, vẫn sửa được chữ trong Word |
+| **Word – giữ nguyên bố cục, sửa được chữ** | Văn bản Word **bình thường** (không khung/text box): đoạn văn đúng vị trí, bảng Word thật (gộp ô, màu nền), chữ ký – con dấu là ảnh đặt đúng chỗ nằm dưới chữ |
+| **Excel – giữ nguyên bố cục** | Mỗi trang = 1 trang tính; bảng thành ô Excel, chữ đúng vị trí, chữ ký – con dấu là ảnh đúng chỗ |
 | Word – văn bản liền mạch | Chữ chảy tự do, bảng thành bảng Word; dễ sửa nhiều nhưng có thể lệch nhẹ |
 | Word – ảnh trang | Giống hệt bản gốc nhưng không sửa được chữ |
 | Ảnh PNG / JPG | Mỗi trang một ảnh, chọn độ nét 150/200/300 DPI |
 | TXT | Chỉ lấy chữ |
+
+## Chuyển đổi file (Ctrl+T) – PDF ↔ Word / Excel
+Bấm nút **Chuyển đổi** → chọn kiểu → thêm file (chọn nhiều file hoặc kéo thả) → **▶ Chuyển đổi**.
+
+| Kiểu | Cách làm | Giữ nguyên |
+|---|---|---|
+| PDF → Word | Văn bản Word bình thường, bảng Word thật | bảng, ô gộp, màu nền, chữ ký, con dấu tròn, vị trí chữ |
+| PDF → Excel | Bảng thành ô Excel, mỗi trang 1 trang tính | bảng, ô gộp, viền, màu nền, chữ ký, con dấu |
+| Word → PDF | Dùng **Microsoft Word** trên máy (hoặc WPS / LibreOffice) | 100% như khi in từ Word |
+| Excel → PDF | Dùng **Microsoft Excel** trên máy (hoặc WPS / LibreOffice) | 100% như khi in từ Excel |
+
+- 🔒 **File gốc chỉ được đọc, không bị sửa** (chuyển từ bản sao tạm). Kết quả luôn là file mới, trùng tên thì tự thêm (1), (2)...
+- Word/Excel → PDF cần máy có cài Microsoft Office, WPS Office hoặc LibreOffice (phần mềm tự dò, báo ngay trong hộp thoại).
+- PDF đang mở trong phần mềm sẽ được chuyển **kèm cả phần vừa sửa** chưa lưu.
+- Bản Word: phần chữ nằm song song (Tên cơ quan | Quốc hiệu, Nơi nhận | Chữ ký) được đặt trong **bảng ẩn viền**
+  giống cách soạn công văn trong Word; chữ ký, con dấu nằm dưới chữ nên bấm vào chữ để sửa không bị vướng ảnh.
+- Sau khi chuyển sang PDF có nút **"Mở PDF vừa tạo để sửa"**.
 
 ## Vì sao không bị nhảy văn bản?
 Phần mềm **không chuyển cả trang sang dạng khác** mà chỉ xoá đúng chữ của dòng được sửa
