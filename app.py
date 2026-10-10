@@ -16,7 +16,7 @@ from PyQt5.QtWidgets import (
     QToolBar, QAction, QActionGroup, QComboBox, QLabel, QSpinBox, QToolButton,
     QColorDialog, QListWidget, QListWidgetItem, QDockWidget, QDialog, QVBoxLayout,
     QHBoxLayout, QRadioButton, QButtonGroup, QDialogButtonBox, QCheckBox, QProgressDialog,
-    QInputDialog, QMenu, QFrame, QWidget, QCompleter, QStyle)
+    QInputDialog, QMenu, QFrame, QWidget, QCompleter, QStyle, QScrollArea, QGridLayout)
 
 # bản exe không có cửa sổ console: tránh lỗi khi thư viện ghi log ra stdout
 if sys.stdout is None:
@@ -425,19 +425,33 @@ class ConvertDialog(QDialog):
         self.win = win
         self.outs = []
         self.setWindowTitle("Chuyển đổi file – PDF ↔ Word / Excel")
-        self.resize(720, 600)
         self.setAcceptDrops(True)
-        lay = QVBoxLayout(self)
+        # Khung gọn: phần nội dung cuộn được, hàng nút chức năng luôn nằm cố định ở đáy
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(8, 8, 8, 8)
+        outer.setSpacing(6)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        inner = QWidget()
+        lay = QVBoxLayout(inner)
+        lay.setContentsMargins(0, 0, 4, 0)
+        lay.setSpacing(4)
+        scroll.setWidget(inner)
+        outer.addWidget(scroll, 1)
+        self.scroll = scroll
 
         lay.addWidget(QLabel("<b>1. Chọn kiểu chuyển đổi:</b>"))
-        row = QHBoxLayout()
+        row = QGridLayout()
+        row.setHorizontalSpacing(16)
+        row.setVerticalSpacing(2)
         self.mode_group = QButtonGroup(self)
         for i, (key, label, exts, out_ext) in enumerate(convert.MODES):
             rb = QRadioButton(label)
             rb.setProperty("key", key)
             self.mode_group.addButton(rb, i)
-            row.addWidget(rb)
-        row.addStretch(1)
+            row.addWidget(rb, i // 2, i % 2)
+        row.setColumnStretch(2, 1)
         lay.addLayout(row)
         self.word_row = QHBoxLayout()
         self.word_row.addWidget(QLabel("   Kiểu Word:"))
@@ -453,7 +467,9 @@ class ConvertDialog(QDialog):
         lay.addWidget(QLabel("<b>2. Chọn file</b> (có thể chọn nhiều file, hoặc kéo thả file vào đây):"))
         self.files = QListWidget()
         self.files.setSelectionMode(QListWidget.ExtendedSelection)
-        lay.addWidget(self.files, 1)
+        self.files.setMinimumHeight(52)
+        self.files.setMaximumHeight(90)
+        lay.addWidget(self.files)
         fr = QHBoxLayout()
         b_add = QToolButton(); b_add.setText(" Thêm file... "); b_add.clicked.connect(self.add_files)
         b_rm = QToolButton(); b_rm.setText(" Bỏ file đã chọn "); b_rm.clicked.connect(self.remove_sel)
@@ -483,8 +499,10 @@ class ConvertDialog(QDialog):
 
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
-        self.log.setMaximumHeight(150)
+        self.log.setMinimumHeight(50)
+        self.log.setMaximumHeight(90)
         lay.addWidget(self.log)
+        lay.addStretch(1)
         bb = QHBoxLayout()
         self.b_go = QToolButton(); self.b_go.setText("  ▶ Chuyển đổi  ")
         f = self.b_go.font(); f.setBold(True); self.b_go.setFont(f)
@@ -498,13 +516,30 @@ class ConvertDialog(QDialog):
             bb.addWidget(b)
         bb.addStretch(1)
         bb.addWidget(b_close)
-        lay.addLayout(bb)
+        outer.addLayout(bb)  # hàng nút ngoài vùng cuộn -> luôn nhìn thấy
         self.b_folder.setEnabled(False)
         self.b_edit.setEnabled(False)
 
         self.mode_group.buttonClicked.connect(lambda *_: self.mode_changed())
         self.mode_group.button(0).setChecked(True)
         self.mode_changed()
+        self._fit_screen()
+
+    def _fit_screen(self):
+        """Kích thước gọn và luôn nằm trọn trong màn hình (kể cả màn hình nhỏ / phóng to 125-150%)."""
+        w, h = 620, 500
+        try:
+            scr = (self.parent().screen() if self.parent() is not None and hasattr(self.parent(), "screen")
+                   else QApplication.primaryScreen())
+            ag = scr.availableGeometry()
+            w = min(w, ag.width() - 40)
+            h = min(h, ag.height() - 80)
+            self.resize(max(420, w), max(300, h))
+            g = self.frameGeometry()
+            g.moveCenter(ag.center())
+            self.move(max(ag.left(), g.left()), max(ag.top(), g.top()))
+        except Exception:
+            self.resize(w, h)
 
     def mode(self):
         return self.convert.MODES[self.mode_group.checkedId()]
@@ -612,6 +647,7 @@ class ConvertDialog(QDialog):
         out_dir = None if self.same_dir.isChecked() else self.out_dir
         self.b_go.setEnabled(False)
         self.log.appendPlainText("— Bắt đầu chuyển %d file —" % len(items))
+        self.scroll.ensureWidgetVisible(self.log)
         self.prog = QProgressDialog("Đang chuyển đổi...", None, 0, len(items), self)
         self.prog.setWindowTitle(APP_TITLE)
         self.prog.setWindowModality(Qt.WindowModal)
