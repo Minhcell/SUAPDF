@@ -31,12 +31,28 @@ def tessdata_dir():
         cands.append(os.path.join(getattr(sys, "_MEIPASS", ""), "tessdata"))
         cands.append(os.path.join(os.path.dirname(sys.executable), "tessdata"))
     cands.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "tessdata"))
+    cands.append(os.path.join(os.getcwd(), "tessdata"))
     if os.environ.get("TESSDATA_PREFIX"):
         cands.append(os.environ["TESSDATA_PREFIX"])
+        cands.append(os.path.join(os.environ["TESSDATA_PREFIX"], "tessdata"))
     for d in cands:
-        if d and os.path.isfile(os.path.join(d, "vie.traineddata")):
+        f = os.path.join(d, "vie.traineddata") if d else ""
+        # file hỏng/rỗng (vd. tải lỗi, con trỏ Git LFS) thì bỏ qua
+        if f and os.path.isfile(f) and os.path.getsize(f) > 1000000:
             return d
     return None
+
+
+def tessdata_report():
+    """Mô tả các chỗ đã tìm vie.traineddata (để báo lỗi rõ ràng)."""
+    out = []
+    for d in [os.path.join(os.path.dirname(os.path.abspath(__file__)), "tessdata"),
+              os.path.join(os.getcwd(), "tessdata"), os.environ.get("TESSDATA_PREFIX", "")]:
+        if not d:
+            continue
+        f = os.path.join(d, "vie.traineddata")
+        out.append("%s=%s" % (f, os.path.getsize(f) if os.path.isfile(f) else "khong co"))
+    return "; ".join(out)
 
 
 def ocr_available():

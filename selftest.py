@@ -316,7 +316,7 @@ def run(out_dir):
         import zipfile
         import collections
         if not ocrpage.ocr_available():
-            raise RuntimeError("thieu du lieu tieng Viet (tessdata/vie.traineddata)")
+            raise RuntimeError("thieu du lieu tieng Viet (tessdata/vie.traineddata): " + ocrpage.tessdata_report())
         d = fitz.open()
         p = d.new_page()
         lines = ["Căn cứ Kế hoạch số 45/KH-UBND, Ủy ban nhân dân phường báo cáo như sau:",
