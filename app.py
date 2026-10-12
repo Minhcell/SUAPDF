@@ -27,7 +27,8 @@ if sys.stderr is None:
 import core
 from core import fitz
 
-APP_TITLE = "Sửa PDF Offline"
+APP_TITLE = "PDF Offline"
+MAIN_TITLE = "Chỉnh PDF offline (CopyRight@Minh-Đ1-06)"  # dòng hiện ở góc trên bên trái cửa sổ
 VERSION = "1.0"
 
 
@@ -734,10 +735,11 @@ class ConvertDialog(QDialog):
                                     self.remove_blank.isChecked())
         self.worker.line.connect(self.log.appendPlainText)
         self.worker.prog.connect(lambda a, b: (self.prog.setMaximum(b), self.prog.setValue(a)))
-        self.worker.result.connect(self.done)
+        self.worker.result.connect(self._convert_done)
         self.worker.start()
 
-    def done(self, outs):
+    def _convert_done(self, outs):
+        # (không đặt tên 'done' – trùng hàm đóng cửa sổ của QDialog, làm tắt cả ứng dụng)
         self.prog.close()
         self.b_go.setEnabled(True)
         self.outs = outs
@@ -1161,7 +1163,7 @@ class MainWindow(QMainWindow):
         self.mode = MODE_EDIT
         self.cur_color = (0, 0, 0)
         self.last_dir = os.path.expanduser("~")
-        self.setWindowTitle(APP_TITLE)
+        self.setWindowTitle(MAIN_TITLE)
         self.resize(1280, 860)
 
         self.view = PageView(self)
@@ -1740,10 +1742,10 @@ class MainWindow(QMainWindow):
 
     def update_title(self):
         if self.pdf:
-            self.setWindowTitle("%s%s – %s" % ("* " if self.pdf.modified else "",
-                                               os.path.basename(self.pdf.path), APP_TITLE))
+            self.setWindowTitle("%s – %s%s" % (MAIN_TITLE, "* " if self.pdf.modified else "",
+                                               os.path.basename(self.pdf.path)))
         else:
-            self.setWindowTitle(APP_TITLE)
+            self.setWindowTitle(MAIN_TITLE)
 
     def status(self, msg):
         self.statusBar().showMessage(msg)
@@ -1784,6 +1786,20 @@ def main():
         QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
     app = QApplication(sys.argv)
     app.setApplicationName(APP_TITLE)
+
+    def _excepthook(et, ev, tb):
+        # PyQt5 mặc định TẮT cả ứng dụng khi có lỗi chưa bắt -> chỉ báo lỗi, ứng dụng vẫn chạy
+        msg = "".join(traceback.format_exception(et, ev, tb))
+        try:
+            with open(os.path.join(core.app_data_dir(), "loi.log"), "a", encoding="utf-8") as f:
+                f.write(msg + "\n")
+        except Exception:
+            pass
+        try:
+            QMessageBox.warning(None, APP_TITLE, "Có lỗi xảy ra (ứng dụng vẫn chạy tiếp):\n%s: %s" % (et.__name__, ev))
+        except Exception:
+            pass
+    sys.excepthook = _excepthook
     app.setStyle("Fusion")
     f = app.font()
     f.setPointSize(10)

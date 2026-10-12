@@ -1,5 +1,7 @@
 # SỬA PDF OFFLINE – Hướng dẫn
 
+*Sửa PDF offline (CopyRight@Minh-Đ1-06)*
+
 Phần mềm chạy hoàn toàn **offline** trên Windows 10/11 (64-bit), chỉ 1 file `SuaPDF.exe`, không cần cài đặt.
 Lần chạy đầu phần mềm đọc danh sách font của máy (vài giây), các lần sau mở nhanh.
 
