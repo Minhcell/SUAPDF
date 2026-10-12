@@ -9,6 +9,10 @@ on:
 permissions:
   contents: write
 
+env:
+  PYTHONUTF8: '1'
+  PYTHONIOENCODING: utf-8
+
 jobs:
   build-windows:
     runs-on: windows-latest
@@ -24,15 +28,42 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt pyinstaller==6.22.3
 
+      - name: Tai du lieu tieng Viet cho nhan dang chu (OCR)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path tessdata | Out-Null
+          $f = "tessdata\vie.traineddata"
+          $urls = @(
+            "https://raw.githubusercontent.com/tesseract-ocr/tessdata_best/main/vie.traineddata",
+            "https://github.com/tesseract-ocr/tessdata_best/raw/main/vie.traineddata",
+            "https://raw.githubusercontent.com/tesseract-ocr/tessdata/main/vie.traineddata"
+          )
+          foreach ($u in $urls) {
+            if ((Test-Path $f) -and ((Get-Item $f).Length -gt 1000000)) { break }
+            Write-Host "Tai $u"
+            try { Invoke-WebRequest -Uri $u -OutFile $f -UseBasicParsing } catch { Write-Host $_ }
+          }
+          $len = (Get-Item $f).Length
+          Write-Host "vie.traineddata: $len bytes"
+          if ($len -lt 1000000) { Write-Error "Khong tai duoc vie.traineddata"; exit 1 }
+          "TESSDATA_PREFIX=$((Resolve-Path tessdata).Path)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
       - name: Kiem tra ma nguon (chay thu loi xu ly PDF)
         run: python app.py --selftest selftest_src
+
+      - name: In nhat ky kiem tra (neu loi)
+        if: failure()
+        shell: pwsh
+        run: Get-Content -Encoding utf8 selftest_src\selftest.log
 
       - name: Dong goi thanh 1 file exe
         run: >
           pyinstaller --noconfirm --clean --onefile --windowed
           --name SuaPDF --icon icon.ico
           --collect-submodules pdf2docx
-          --hidden-import selftest
+          --hidden-import selftest --hidden-import convert --hidden-import wordnative --hidden-import splitter --hidden-import glyphfix --hidden-import ocrpage --hidden-import vlines
+          --add-data "tessdata;tessdata"
+          --hidden-import win32com.client --hidden-import pythoncom --hidden-import openpyxl
           --exclude-module tkinter --exclude-module matplotlib
           --exclude-module scipy --exclude-module pandas
           --exclude-module PyQt5.QtWebEngineWidgets --exclude-module PyQt5.QtQml
@@ -42,7 +73,7 @@ jobs:
         shell: pwsh
         run: |
           $p = Start-Process -FilePath "dist\SuaPDF.exe" -ArgumentList "--selftest","selftest_exe" -Wait -PassThru
-          Get-Content selftest_exe\selftest.log
+          if (Test-Path selftest_exe\selftest.log) { Get-Content -Encoding utf8 selftest_exe\selftest.log }
           if ($p.ExitCode -ne 0) { exit 1 }
 
       - name: Gom file
@@ -51,8 +82,8 @@ jobs:
           New-Item -ItemType Directory -Force -Path out | Out-Null
           Copy-Item dist\SuaPDF.exe out\
           Copy-Item HUONG_DAN.md out\
-          Copy-Item selftest_exe\kq_bocuc.docx out\VD_word_giu_bo_cuc.docx
-          Copy-Item selftest_exe\kq.pdf out\VD_pdf_da_sua.pdf
+          Copy-Item selftest_exe\kq_bocuc.docx out\VD_word_giu_bo_cuc.docx -ErrorAction SilentlyContinue
+          Copy-Item selftest_exe\kq.pdf out\VD_pdf_da_sua.pdf -ErrorAction SilentlyContinue
 
       - uses: actions/upload-artifact@v4
         with:
