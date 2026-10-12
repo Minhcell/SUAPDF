@@ -123,7 +123,7 @@ def _visual_header(page):
         if y1 - y0 + 1 > max(7, int(Hpage * 0.008)):
             continue                          # quá dày -> không phải gạch chân
         cx = (a + b) / 2
-        if not (0.50 * w <= cx <= 0.93 * w) or y0 < Hpage * 0.03:
+        if not (0.40 * w <= cx <= 0.93 * w) or y0 < Hpage * 0.03:
             continue
         # đường kẻ bảng: kéo dài quá 45% bề ngang trang trên cùng độ cao
         band = p2[max(0, y0 - 1):y1 + 2]
@@ -142,11 +142,55 @@ def _visual_header(page):
         if below.size and below.mean() > 0.06:
             continue
         # có vạch đứng cắt ngang (khung bảng) -> loại
-        col = bw[min(h - 1, y1 + 2):min(h, y1 + 2 + lh), a:b]
-        if col.size and (col.mean(axis=0) > 0.8).sum() >= 1:
+        # khung bảng: có vạch đứng chạy xuống ngay dưới đường kẻ
+        below_v = pool[min(h - 1, y1 + 2):min(h, y1 + 2 + lh), a:b]
+        if below_v.size and (below_v.mean(axis=0) > 0.75).any():
+            continue
+        # phía trên phải có 2 dòng chữ (Quốc hiệu: "CỘNG HÒA..." + "Độc lập - Tự do...")
+        rows = bw[max(0, y0 - 4 * lh):max(0, y0 - 2), max(0, a - int(0.08 * w)):min(w, b + int(0.08 * w))]
+        prof = rows.mean(axis=1) > 0.02 if rows.size else np.zeros(0, bool)
+        nb, prev = 0, False
+        for v in prof:
+            if v and not prev:
+                nb += 1
+            prev = bool(v)
+        if nb < 2:
+            continue
+        centered_page = 0.40 * w <= cx <= 0.60 * w and y0 < Hpage * 0.16
+        # Quốc hiệu bên phải luôn đi cặp với TÊN CƠ QUAN bên trái (cùng độ cao)
+        left = bw[max(0, y0 - 4 * lh):min(h, y1 + lh), int(0.05 * w):int(0.46 * w)]
+        has_left = left.size and left.mean() > 0.012
+        if not (has_left or centered_page):
             continue
         return True, "gạch chân Quốc hiệu (ảnh scan)"
     return False, ""
+
+
+def _page_number_top(page, words):
+    """Có SỐ TRANG ở giữa phía trên (từ trang 2 trở đi theo thể thức văn bản) -> không phải trang đầu."""
+    W, H = page.rect.width, page.rect.height
+    if words:
+        top = [w for w in words if w[3] <= H * 0.085 and w[4].strip()]
+        if top:
+            return all(re.fullmatch(r"[-–\s]*\d{1,3}[-–\s]*", w[4]) for w in top) and \
+                all(abs((w[0] + w[2]) / 2 - W / 2) < W * 0.12 for w in top)
+        return False
+    clip = fitz.Rect(0, H * 0.015, W, H * 0.068)
+    pm = page.get_pixmap(dpi=100, colorspace=fitz.csGRAY, alpha=False, clip=clip)
+    g = np.frombuffer(pm.samples, dtype=np.uint8).reshape(pm.height, pm.stride)[:, :pm.width]
+    gw = g.shape[1]
+    g = g[:, int(gw * 0.08):int(gw * 0.92)]
+    paper = float(np.percentile(g, 85))
+    bw = g < (paper - 50)
+    # bỏ chấm bụi lẻ
+    cols = np.where(bw.sum(axis=0) >= 2)[0]
+    rows = np.where(bw.sum(axis=1) >= 2)[0]
+    if len(cols) < 2 or len(rows) < 2:
+        return False
+    x0, x1 = cols.min(), cols.max()
+    cw = g.shape[1]
+    cxr = (x0 + x1) / 2 / cw
+    return (x1 - x0) < cw * 0.07 and 0.40 <= cxr <= 0.60 and (rows.max() - rows.min()) < g.shape[0] * 0.8
 
 
 def analyze(doc, progress=None, stop=None):
@@ -160,16 +204,22 @@ def analyze(doc, progress=None, stop=None):
         blank, ink = _is_blank(page, g)
         header, why = False, ""
         if not blank:
+            H = page.rect.height
             try:
-                H = page.rect.height
-                txt = " ".join(w[4] for w in page.get_text("words")
-                               if (fitz.Rect(w[:4]) * page.rotation_matrix).y1 <= H * 0.35)
+                words = [w for w in page.get_text("words") if w[4].strip()]
+                rot = page.rotation_matrix
+                words = [tuple(fitz.Rect(w[:4]) * rot) + (w[4],) for w in words]
             except Exception:
-                txt = ""
-            if txt.strip() and _HEADER_RE.search(_plain(txt)):
-                header, why = True, "Quốc hiệu (chữ)"
+                words = []
+            if len(words) >= 8:
+                # PDF có lớp chữ (bản số / đã OCR): chỉ tin vào chữ
+                txt = " ".join(w[4] for w in words if w[3] <= H * 0.30)
+                if _HEADER_RE.search(_plain(txt)):
+                    header, why = True, "Quốc hiệu (chữ)"
             else:
                 header, why = _visual_header(page)
+            if header and _page_number_top(page, words if len(words) >= 8 else None):
+                header, why = False, "có số trang ở đầu trang -> trang tiếp theo"
         infos.append(PageInfo(blank, header, why, ink))
         if progress:
             progress(i + 1, n)

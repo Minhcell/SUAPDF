@@ -14,6 +14,11 @@ Lần chạy đầu phần mềm đọc danh sách font của máy (vài giây),
 - Xoá hết chữ trong ô rồi bấm ra ngoài = xoá dòng đó.
 - **Font** mặc định *Times New Roman*; chọn font khác và **cỡ chữ** trên thanh định dạng
   (đổi khi đang sửa thì áp dụng ngay). Có nút **B** (đậm), **I** (nghiêng), **Màu chữ**.
+- **Sửa đoạn dài như Word:** bấm vào 1 dòng là sửa **cả đoạn** (hoặc cả nội dung ô bảng); gõ dài thì chữ
+  **tự xuống dòng** trong đúng bề rộng đoạn / ô. Vạch đỏ đứt nét = giới hạn dưới: nếu nhiều chữ hơn chỗ trống,
+  phần mềm tự thu nhỏ cỡ chữ để **không đè lên dòng hoặc ô bên dưới** (thanh trạng thái báo cỡ chữ mới).
+- **Chữ hiện sai khi bấm sửa** (vd "Trảng" thành "Trdng"): do font trong file PDF khai báo sai mã chữ.
+  Phần mềm tự so hình chữ thật trên trang để sửa lại đúng (áp dụng cả khi chuyển sang Word / Excel).
 - Ô *“Chỉ font có tiếng Việt”*: chỉ liệt kê font gõ được đủ dấu tiếng Việt.
 - Ô *“Giữ font gốc của dòng khi sửa”*: bật nếu muốn dòng sửa dùng lại font của file gốc.
 - **Ctrl+Z / Ctrl+Y**: hoàn tác / làm lại. **Ctrl + lăn chuột**: phóng to/thu nhỏ.
@@ -43,6 +48,15 @@ Bấm nút **Chuyển đổi** → chọn kiểu → thêm file (chọn nhiều 
 - 🔒 **File gốc chỉ được đọc, không bị sửa** (chuyển từ bản sao tạm). Kết quả luôn là file mới, trùng tên thì tự thêm (1), (2)...
 - Word/Excel → PDF cần máy có cài Microsoft Office, WPS Office hoặc LibreOffice (phần mềm tự dò, báo ngay trong hộp thoại).
 - PDF đang mở trong phần mềm sẽ được chuyển **kèm cả phần vừa sửa** chưa lưu.
+- **Đề thi, tài liệu có công thức (toán, hoá, lý) → Word:** chữ là văn bản Word gõ sửa được; chỉ số trên/dưới
+  (Pb²⁺, CH₃, 10⁻³¹) là chỉ số thật của Word; công thức xếp tầng (phân số, vectơ, căn, ngoặc lớn) là ảnh nét cao đặt
+  đúng chỗ trong dòng; đáp án A/B/C/D dàn bằng phím Tab; mỗi dòng xuống hàng đúng như bản gốc (ngắt dòng mềm)
+  nên **không chạy chữ, không tràn trang**; chữ đầu/chân trang (số trang, "Trang x/y") nằm trong Header/Footer.
+- **PDF scan (file ảnh) → Word:** phần mềm tự **nhận dạng chữ tiếng Việt (OCR)** ngay trên máy, không cần mạng
+  (khoảng 5 giây/trang). Kết quả là văn bản Word **gõ sửa được như bình thường** – không có khung text box:
+  đoạn văn, bảng Word thật dựng lại từ đường kẻ trên ảnh, trang nghiêng được tự chỉnh thẳng;
+  con dấu đỏ, chữ ký, logo giữ nguyên là ảnh đặt đúng chỗ. Nên dò lại chữ vì OCR có thể sai vài chữ
+  (nhất là chỗ con dấu đè lên chữ hoặc bản scan mờ).
 - **Chuyển nhiều file cùng lúc:** thêm bao nhiêu file cũng được → mỗi file gốc ra **1 file kết quả riêng, cùng tên**.
   Xong sẽ báo: *"Đã chuyển thành công X/Y file"*, số trang trống đã xoá và file nào bị lỗi (nếu có).
 - **Tự xoá trang trống** (bật sẵn, bỏ chọn nếu không muốn): Word/Excel → PDF xoá trang trắng trong PDF tạo ra;
@@ -58,6 +72,8 @@ Bấm **Tách văn bản** → chọn file PDF gộp (hoặc dùng file đang m�
   (PDF có chữ: đọc chữ "CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM"; PDF scan: nhận ra gạch chân dưới
   "Độc lập - Tự do - Hạnh phúc"). Văn bản 1 trang, 2 trang hay nhiều trang đều tách đúng.
 - **Trang trống** (ô xám): tự bỏ – kể cả trang chỉ có bóng mép giấy, bụi, hoặc số trang.
+- Trang có **số trang ở giữa phía trên** (trang 2, 3...) luôn được coi là trang tiếp theo – không bị tách nhầm;
+  Quốc hiệu phải đi cặp với tên cơ quan bên trái (hoặc căn giữa trang như đơn từ). Rê chuột lên trang để xem lý do.
 - Máy nhận sai? **Bấm vào trang** để đặt / bỏ chỗ bắt đầu văn bản; **chuột phải** để đánh dấu trang trống / giữ trang.
 - Cách khác: *Theo trang trống* (trang trắng ngăn cách văn bản) hoặc *Cố định N trang mỗi văn bản*.
 - **✂ Tách & lưu** → mỗi văn bản 1 file `TênGốc_VB01.pdf`, `..._VB02.pdf`... trong thư mục `TênGốc_tach`,

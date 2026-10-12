@@ -222,6 +222,13 @@ def run(out_dir):
         def cont(d, n):
             p = d.new_page()
             p.insert_text((290, 40), str(n), fontname="F0", fontfile=path, fontsize=12)
+            # bảng nhỏ góc phải phía trên (trước đây làm tách nhầm thành văn bản mới)
+            for r in range(4):
+                p.draw_line((330, 60 + r * 20), (530, 60 + r * 20), width=0.7)
+            for x in (330, 400, 530):
+                p.draw_line((x, 60), (x, 120), width=0.7)
+            for r in range(3):
+                p.insert_text((340, 75 + r * 20), "Mục %d" % r, fontname="F0", fontfile=path, fontsize=11)
             for i in range(20):
                 p.insert_text((72, 80 + i * 19), "Tiếp theo dòng %d ................................" % i,
                               fontname="F0", fontfile=path, fontsize=12)
@@ -252,6 +259,126 @@ def run(out_dir):
         log("    " + " | ".join(res))
 
     step("Tach file PDF gop thanh tung van ban (bo trang trong)", split_check)
+
+    def glyph_check():
+        # font khai báo sai mã: hình chữ 'ả' nhưng đọc ra 'd' -> phải sửa thành 'ả', giữ 'd' thật
+        d = fitz.open()
+        p = d.new_page()
+        p.insert_text((72, 100), "CAX Trảng Bom - dung dưới", fontname="F0", fontfile=path, fontsize=13)
+        src = out("ma_sai.pdf")
+        d.save(src)
+        from fontTools.ttLib import TTFont
+        tt = TTFont(path, lazy=True, fontNumber=0)
+        gid = tt.getGlyphID(tt.getBestCmap()[ord("ả")])
+        d = fitz.open(src)
+        for x in range(1, d.xref_length()):
+            try:
+                st = d.xref_stream(x)
+            except Exception:
+                continue
+            if st and b"CMap" in st and (b"bfrange" in st or b"bfchar" in st):
+                d.update_stream(x, st.replace(b"endcmap", b"1 beginbfchar\n<%04x> <0064>\nendbfchar\nendcmap" % gid))
+        d.save(out("ma_sai2.pdf"))
+        pd = core.PdfDocument(out("ma_sai2.pdf"))
+        ln = pd.lines(0)[0]
+        assert "Trdng" in ln.text, "khong tai hien duoc loi ma: %s" % ascii(ln.text)
+        fixed = pd.fixed_texts(0, [ln], fm)[0]
+        log("    doc ra: %s -> sua thanh: %s" % (ascii(ln.text), ascii(fixed)))
+        assert fixed == "CAX Trảng Bom - dung dưới", "sua ma sai: %s" % ascii(fixed)
+
+    step("Sua ma chu sai cua font ('Trdng' -> 'Trảng')", glyph_check)
+
+    def wrap_check():
+        # sửa đoạn dài trong ô bảng: tự xuống dòng, không vượt ô, không đè dòng dưới
+        d = fitz.open()
+        p = d.new_page()
+        for r in range(3):
+            p.draw_rect(fitz.Rect(60, 60 + r * 30, 300, 90 + r * 30), width=0.8)
+            p.insert_text((66, 80 + r * 30), "Ô số %d" % r, fontname="F0", fontfile=path, fontsize=13)
+        d.save(out("o_bang.pdf"))
+        pd = core.PdfDocument(out("o_bang.pdf"))
+        ln = [l for l in pd.lines(0) if l.text == "Ô số 1"][0]
+        para = pd.para_for_line(0, ln)
+        info = pd.replace_para(0, para, "Ô số 1 rất dài: " + "nội dung bổ sung " * 6, fm, fam, 13, (0, 0, 0), False, False)
+        rows = [l for l in pd.lines(0) if 90 <= (l.bbox.y0 + l.bbox.y1) / 2 <= 120]
+        log("    xuong %d dong, co chu %.1f, day duoi %.1f (gioi han %.1f)" % (info["rows"], info["size"], info["bottom"], para["limit"]))
+        assert info["rows"] >= 2, "khong tu xuong dong"
+        assert info["bottom"] <= para["limit"] + 0.5, "chu vuot ra ngoai o"
+        assert all(l.bbox.x1 <= 300.5 for l in rows), "chu tran ra ngoai o"
+        assert any(l.text == "Ô số 2" for l in pd.lines(0)), "mat dong ben duoi"
+
+    step("Sua doan dai: tu xuong dong, khong de dong duoi", wrap_check)
+
+    def ocr_check():
+        # PDF scan (chỉ có ảnh) -> Word: phải ra chữ gõ được (OCR), không khung text box, có bảng
+        import ocrpage
+        import wordnative
+        import zipfile
+        import collections
+        if not ocrpage.ocr_available():
+            raise RuntimeError("thieu du lieu tieng Viet (tessdata/vie.traineddata)")
+        d = fitz.open()
+        p = d.new_page()
+        lines = ["Căn cứ Kế hoạch số 45/KH-UBND, Ủy ban nhân dân phường báo cáo như sau:",
+                 "Đề nghị các đơn vị liên quan phối hợp thực hiện đầy đủ nội dung trên."]
+        for i, t in enumerate(lines):
+            p.insert_text((60, 100 + i * 20), t, fontname="F0", fontfile=path, fontsize=13)
+        for r in range(3):
+            for c in range(3):
+                rect = fitz.Rect(60 + c * 160, 160 + r * 24, 220 + c * 160, 184 + r * 24)
+                p.draw_rect(rect, color=(0, 0, 0), width=0.8)
+                p.insert_text((rect.x0 + 5, rect.y0 + 17), "Dữ liệu %d %d" % (r, c), fontname="F0",
+                              fontfile=path, fontsize=12)
+        pm = p.get_pixmap(dpi=200, colorspace=fitz.csGRAY)
+        sc = fitz.open()
+        sp = sc.new_page(width=p.rect.width, height=p.rect.height)
+        sp.insert_image(sp.rect, stream=pm.tobytes("png"))
+        src = out("scan_anh.pdf")
+        sc.save(src)
+        assert ocrpage.is_scanned(fitz.open(src)[0]), "khong nhan ra trang scan"
+        dst = out("scan_anh.docx")
+        wordnative.pdf_to_docx(fitz.open(src), dst)
+        x = zipfile.ZipFile(dst).read("word/document.xml").decode("utf-8")
+        assert "framePr" not in x and "txbx" not in x, "Word van con khung text box"
+        assert "<w:tbl" in x, "khong dung lai duoc bang"
+        import re as _re
+        got = " ".join(_re.findall(r"<w:t[^>]*>([^<]*)</w:t>", x)).split()
+        truth = (" ".join(lines) + " " + " ".join("Dữ liệu %d %d" % (r, c) for r in range(3) for c in range(3))).split()
+        T, G = collections.Counter(truth), collections.Counter(got)
+        acc = sum((T & G).values()) / len(truth)
+        log("    OCR dung %.0f%% so tu" % (acc * 100))
+        assert acc >= 0.85, "OCR sai nhieu (%.0f%%)" % (acc * 100)
+
+    step("PDF scan -> Word go duoc (nhan dang chu tieng Viet, khong text box)", ocr_check)
+
+    def math_check():
+        # dòng có chỉ số trên + phân số -> Word: chỉ số trên thật, phân số là ảnh trong dòng, 1 trang
+        import wordnative
+        import zipfile
+        d = fitz.open()
+        p = d.new_page()
+        p.insert_text((60, 100), "Ion Pb", fontname="F0", fontfile=path, fontsize=13)
+        p.insert_text((97, 94), "2+", fontname="F0", fontfile=path, fontsize=8.5)
+        p.insert_text((112, 100), "nằm ở tâm khối, công thức:", fontname="F0", fontfile=path, fontsize=13)
+        p.insert_text((280, 92), "h", fontname="F0", fontfile=path, fontsize=13)
+        p.draw_line((275, 96), (300, 96), width=0.6)
+        p.insert_text((276, 109), "8L", fontname="F0", fontfile=path, fontsize=13)
+        p.insert_text((310, 100), "là năng lượng.", fontname="F0", fontfile=path, fontsize=13)
+        for i in range(8):
+            p.insert_text((60, 140 + i * 18), "Dòng nội dung tiếp theo số %d của văn bản thử nghiệm." % i,
+                          fontname="F0", fontfile=path, fontsize=13)
+        src = out("cong_thuc.pdf")
+        d.save(src)
+        dst = out("cong_thuc.docx")
+        wordnative.pdf_to_docx(fitz.open(src), dst)
+        x = zipfile.ZipFile(dst).read("word/document.xml").decode("utf-8")
+        assert 'w:vertAlign w:val="superscript"' in x, "mat chi so tren"
+        assert "framePr" not in x and "txbx" not in x, "con khung text box"
+        assert x.count("<wp:anchor") >= 1, "mat anh cong thuc"
+        assert x.count("<w:br/>") >= 0
+        log("    chi so tren: co | anh cong thuc: %d" % x.count("Cho cong thuc"))
+
+    step("Cong thuc: chi so tren/duoi that, phan so la anh dung cho", math_check)
 
     for f in ("kq.pdf", "kq_bocuc.docx", "kq.xlsx", "kq_anh.docx", "kq_lienmach.docx", "kq.png", "kq.jpg", "kq.txt"):
         p = out(f)

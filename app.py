@@ -57,6 +57,7 @@ class InlineEditor(QPlainTextEdit):
                            "border:%dpx dashed #1e6fd9;}" % int(SUPER))
         self.textChanged.connect(self.fit)
         self.min_w = 40
+        self.fixed_w = None   # bề rộng cố định (px) -> tự xuống dòng như Word
 
     def keyPressEvent(self, e):
         if e.key() == Qt.Key_Escape:
@@ -79,8 +80,34 @@ class InlineEditor(QPlainTextEdit):
         self.setPalette(pal)
         self.fit()
 
+    def set_wrap_width(self, w_px):
+        """Bật tự xuống dòng trong bề rộng w_px (đúng bề rộng đoạn / ô bảng trên trang)."""
+        self.fixed_w = w_px
+        self.setLineWrapMode(QPlainTextEdit.WidgetWidth)
+        self.fit()
+
+    def _wrapped_count(self, fm, avail):
+        n = 0
+        for hard in self.toPlainText().split("\n"):
+            line, cnt = "", 1
+            for w in hard.split(" "):
+                trial = (line + " " + w) if line else w
+                if fm.horizontalAdvance(trial) <= avail or not line:
+                    line = trial
+                else:
+                    cnt += 1
+                    line = w
+            n += cnt
+        return max(1, n)
+
     def fit(self):
         fm = QFontMetricsF(self.font())
+        if self.fixed_w:
+            w = self.fixed_w + 2 * SUPER + fm.averageCharWidth()
+            n = self._wrapped_count(fm, self.fixed_w)
+            h = fm.lineSpacing() * n + 4 * SUPER
+            self.resize(int(w), int(h))
+            return
         lines = self.toPlainText().split("\n") or [""]
         w = max([fm.horizontalAdvance(t) for t in lines] + [self.min_w]) + fm.averageCharWidth() * 2 + 4 * SUPER
         h = fm.lineSpacing() * max(1, len(lines)) + 4 * SUPER
@@ -111,6 +138,7 @@ class PageView(QGraphicsView):
         self.edit_ctx = None  # ('line', Line) | ('add', x, top)
         self.opened_style = None
         self.cover = None
+        self.limit_line = None
 
     # ---- hiển thị
     def show_page(self, pixmap, page_rect, scale_px):
@@ -215,9 +243,11 @@ class PageView(QGraphicsView):
         super().mouseReleaseEvent(e)
 
     # ---- ô soạn
-    def _make_editor(self, x, top, text, family, size, bold, italic, color, min_w):
+    def _make_editor(self, x, top, text, family, size, bold, italic, color, min_w, wrap_w=None):
         ed = InlineEditor()
         ed.min_w = min_w * SUPER
+        if wrap_w:
+            ed.set_wrap_width(wrap_w * SUPER)
         ed.set_style(family, size, bold, italic, color)
         ed.setPlainText(text)
         ed.commit.connect(lambda: self.close_editor(True))
@@ -241,23 +271,50 @@ class PageView(QGraphicsView):
         w = self.win
         # font mặc định Times New Roman, giữ cỡ chữ / đậm / nghiêng / màu của chữ gốc
         w.load_style_from_line(ln)
-        self.edit_ctx = ("line", ln)
         self.opened_style = w.cur_style()
         fam = w.cur_family()
-        top = ln.origin.y - ln.ascender * ln.size
-        self._make_editor(ln.origin.x, top, ln.text, fam, w.cur_size(), w.cur_bold(), w.cur_italic(),
-                          w.cur_color, ln.bbox.width)
+        # sửa NGUYÊN ĐOẠN (hoặc nguyên ô bảng): tự xuống dòng trong đúng bề rộng như Word
+        try:
+            para = w.pdf.para_for_line(w.cur, ln)
+        except Exception:
+            para = None
+        if para is None:
+            self.edit_ctx = ("line", ln)
+            top = ln.origin.y - ln.ascender * ln.size
+            self._make_editor(ln.origin.x, top, ln.text, fam, w.cur_size(), w.cur_bold(), w.cur_italic(),
+                              w.cur_color, ln.bbox.width)
+            r = QRectF(ln.bbox.x0, ln.bbox.y0, ln.bbox.width, ln.bbox.height)
+        else:
+            # chữ đã sửa mã sai của font (vd 'Trdng' -> 'Trảng')
+            texts = w.pdf.fixed_texts(w.cur, para["lines"], w.fm)
+            text = " ".join(t.strip() for t in texts if t.strip())
+            self.edit_ctx = ("para", para, text)
+            top = para["baseline"] - ln.ascender * ln.size
+            self._make_editor(para["x0"], top, text, fam, w.cur_size(), w.cur_bold(), w.cur_italic(),
+                              w.cur_color, ln.bbox.width, wrap_w=para["x1"] - para["x0"])
+            r = QRectF()
+            for l in para["lines"]:
+                r = r.united(QRectF(l.bbox.x0, l.bbox.y0, l.bbox.width, l.bbox.height))
+            # vạch giới hạn dưới: chữ vượt quá sẽ tự thu nhỏ để không đè dòng / đường kẻ bên dưới
+            lim = para["limit"]
+            self.limit_line = self.scene().addLine(para["x0"], lim, para["x1"], lim,
+                                                   QPen(QColor(217, 48, 37, 160), 0, Qt.DashLine))
+            self.limit_line.setZValue(9)
         # che chữ cũ trong lúc sửa
-        r = QRectF(ln.bbox.x0, ln.bbox.y0, ln.bbox.width, ln.bbox.height)
         self.cover = self.scene().addRect(r, QPen(Qt.NoPen), QBrush(QColor(255, 255, 255)))
         self.cover.setZValue(4)
-        w.status(("[Bản scan: vùng chữ cũ sẽ được phủ trắng] " if ln.invisible else "") + "Đang sửa dòng. Gõ chữ như Word – Enter: xuống dòng | Ctrl+Enter hoặc bấm ra ngoài: xong | Esc: huỷ")
+        n = len(para["lines"]) if para else 1
+        w.status(("[Bản scan: vùng chữ cũ sẽ được phủ trắng] " if ln.invisible else "") +
+                 ("Đang sửa đoạn %d dòng – " % n if n > 1 else "Đang sửa – ") +
+                 "gõ như Word, chữ tự xuống dòng (vạch đỏ = giới hạn dưới) | Ctrl+Enter hoặc bấm ra ngoài: xong | Esc: huỷ")
 
     def open_editor_add(self, x, top):
         w = self.win
-        self.edit_ctx = ("add", x, top)
+        wrap = max(60.0, w.page_rect().width - 36 - x)
+        self.edit_ctx = ("add", x, top, wrap)
         self.cover = None
-        self._make_editor(x, top, "", w.cur_family(), w.cur_size(), w.cur_bold(), w.cur_italic(), w.cur_color, 60)
+        self._make_editor(x, top, "", w.cur_family(), w.cur_size(), w.cur_bold(), w.cur_italic(), w.cur_color, 60,
+                          wrap_w=wrap)
         w.status("Gõ chữ mới – Enter: xuống dòng | Ctrl+Enter hoặc bấm ra ngoài: xong | Esc: huỷ")
 
     def restyle_editor(self):
@@ -283,6 +340,12 @@ class PageView(QGraphicsView):
             except Exception:
                 pass
             self.cover = None
+        if getattr(self, "limit_line", None) is not None:
+            try:
+                self.scene().removeItem(self.limit_line)
+            except Exception:
+                pass
+            self.limit_line = None
         try:
             ed.deleteLater()
         except RuntimeError:
@@ -583,7 +646,8 @@ class ConvertDialog(QDialog):
             self.engine_lbl.setStyleSheet("color:#333")
         else:
             self.engine_lbl.setText("Văn bản Word bình thường: đoạn văn đúng vị trí, bảng Word thật, "
-                                    "chữ ký / con dấu là ảnh đặt đúng chỗ (nằm dưới chữ).")
+                                    "chữ ký / con dấu là ảnh đặt đúng chỗ (nằm dưới chữ)."
+                                    "<br>PDF scan (ảnh): tự nhận dạng chữ tiếng Việt (OCR, offline) – khoảng 5 giây/trang.")
             self.engine_lbl.setStyleSheet("color:#333")
         # giữ lại các file hợp lệ với kiểu mới
         keep = []
@@ -1008,6 +1072,10 @@ class SplitDialog(QDialog):
                     txt += "\nvb %d" % (vb_of[i] + 1)
                 it.setBackground(QBrush(Qt.transparent))
             it.setText(txt)
+            info = self.infos[i] if i < len(self.infos) else None
+            if info is not None:
+                why = info.why or ("trang trống" if info.blank else "trang tiếp theo của văn bản")
+                it.setToolTip("Trang %d: %s" % (i + 1, why))
         if self.infos is None:
             return
         nb = len([i for i in self.blanks]) if self.drop_blank.isChecked() else 0
@@ -1596,21 +1664,34 @@ class MainWindow(QMainWindow):
         try:
             text = text.replace("\r", "").rstrip("\n")
             args = (self.fm, self.cur_family(), self.cur_size(), self.cur_color, self.cur_bold(), self.cur_italic())
-            if ctx[0] == "line":
-                ln = ctx[1]
+            msg = ""
+            if ctx[0] == "para":
+                _, para, orig = ctx
                 # bấm vào rồi bấm ra mà không đổi gì -> không ghi lại (giữ nguyên chữ gốc)
+                if text == orig and self.cur_style() == self.view.opened_style:
+                    return
+                info = self.pdf.replace_para(self.cur, para, text, *args)
+                if info["rows"] > len(para["lines"]):
+                    msg = "Đã tự xuống dòng thành %d dòng" % info["rows"]
+                if info["size"] < self.cur_size() - 0.01:
+                    msg += ("; " if msg else "") + ("đã thu chữ còn %.1f pt để không đè lên dòng / đường kẻ bên dưới"
+                                                    % info["size"])
+            elif ctx[0] == "line":
+                ln = ctx[1]
                 if text == ln.text and self.cur_style() == self.view.opened_style:
                     return
                 self.pdf.replace_line(self.cur, ln, text, *args)
             else:
-                _, x, top = ctx
+                x, top = ctx[1], ctx[2]
                 if not text.strip():
                     return
-                self.pdf.add_text(self.cur, x, top, text, *args)
+                self.pdf.add_text(self.cur, x, top, text, *args, width=ctx[3] if len(ctx) > 3 else None)
         except Exception as ex:
             QMessageBox.critical(self, APP_TITLE, "Không ghi được chữ:\n%s" % ex)
             return
         self.after_change()
+        if msg:
+            self.status(msg + ".")
 
     def cur_style(self):
         return (self.cur_family(), self.cur_size(), self.cur_bold(), self.cur_italic(), tuple(self.cur_color))

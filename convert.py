@@ -79,6 +79,14 @@ def _page_lines(page):
     rot = page.rotation_matrix
     rot0 = fitz.Matrix(rot.a, rot.b, rot.c, rot.d, 0, 0)
     dd = page.get_text("rawdict", flags=fitz.TEXT_PRESERVE_WHITESPACE | fitz.TEXT_PRESERVE_LIGATURES)
+    # sửa chữ bị font khai báo sai mã (vd "Trảng" đọc ra "Trdng") – so hình chữ thật trên trang
+    try:
+        import glyphfix
+        fm = glyphfix._default_fm()
+        if fm is not None:
+            glyphfix.get_fixer(fm, id(page.parent)).fix_page_spans(page, dd)
+    except Exception:
+        pass
     out = []
     for b in dd["blocks"]:
         if b.get("type", 0) != 0:
@@ -87,7 +95,7 @@ def _page_lines(page):
             ink = fitz.Rect()
             for s in ln["spans"]:
                 chars = s.pop("chars", [])
-                s["text"] = "".join(c["c"] for c in chars)
+                s["text"] = s["text"] if "text" in s else "".join(c["c"] for c in chars)
                 for c in chars:
                     if core.norm_text(c["c"]).strip():
                         ink |= fitz.Rect(c["bbox"])
@@ -123,7 +131,7 @@ def _font_of(spans):
                 color=_hex(s.get("color", 0)))
 
 
-def _graphics_layer(doc, pno, lines, tables, dpi):
+def _graphics_layer(doc, pno, lines, tables, dpi, keep_inner=False):
     """Ảnh trong suốt chứa mọi thứ KHÔNG phải chữ ngang và KHÔNG phải khung bảng:
     chữ ký, con dấu, logo, đường kẻ trang trí... Trả về list (rect_pt, png_bytes)."""
     import numpy as np
@@ -138,14 +146,29 @@ def _graphics_layer(doc, pno, lines, tables, dpi):
     core.apply_text_only_redactions(tp)
     # bỏ khung bảng + nền ô (đã chuyển thành viền / màu ô Excel)
     covered = getattr(fitz, "PDF_REDACT_LINE_ART_REMOVE_IF_COVERED", 1)
-    for t in tables:
-        r = fitz.Rect(t.bbox)
-        r = fitz.Rect(r.x0 - 1.5, r.y0 - 1.5, r.x1 + 1.5, r.y1 + 1.5) * derot
-        tp.add_redact_annot(r, fill=False)
+    if keep_inner:
+        # chỉ xoá ĐƯỜNG KẺ của bảng (dải mỏng dọc theo các hàng / cột); giữ nguyên mọi thứ bên trong ô
+        # (ô tròn, dấu tích, chữ vẽ bằng nét, hình...)
+        for t in tables:
+            cl = [fitz.Rect(c) for c in t.cells if c]
+            if not cl:
+                continue
+            tb = fitz.Rect(t.bbox)
+            ys = sorted(set(round(v, 1) for c in cl for v in (c.y0, c.y1)))
+            xs = sorted(set(round(v, 1) for c in cl for v in (c.x0, c.x1)))
+            for y in ys:
+                tp.add_redact_annot(fitz.Rect(tb.x0 - 2, y - 1.6, tb.x1 + 2, y + 1.6) * derot, fill=False)
+            for x in xs:
+                tp.add_redact_annot(fitz.Rect(x - 1.6, tb.y0 - 2, x + 1.6, tb.y1 + 2) * derot, fill=False)
+    else:
+        for t in tables:
+            r = fitz.Rect(t.bbox)
+            r = fitz.Rect(r.x0 - 1.5, r.y0 - 1.5, r.x1 + 1.5, r.y1 + 1.5) * derot
+            tp.add_redact_annot(r, fill=False)
     if tables:
         try:
             tp.apply_redactions(images=core.REDACT_KW["images"], graphics=covered,
-                                text=core.REDACT_KW["text"])
+                                text=getattr(fitz, "PDF_REDACT_TEXT_NONE", 1) if keep_inner else core.REDACT_KW["text"])
         except TypeError:
             pass
     pm = tp.get_pixmap(dpi=dpi, alpha=True)

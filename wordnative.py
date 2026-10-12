@@ -55,10 +55,94 @@ class Ln:
         return (self.x0 + self.x1) / 2
 
 
+_CTX = {}   # trong lúc dựng tài liệu: 'img' = hàm thêm ảnh -> rId, 'pid' = bộ đếm
+
+
+def _inline_img(it):
+    """Ảnh công thức nằm TRONG dòng chữ, hạ xuống đúng chân chữ."""
+    E = 12700
+    r = it["rect"]
+    rid = _CTX["img"](it["png"])
+    pid = _CTX["pid"][0]
+    _CTX["pid"][0] += 1
+    cx, cy = int(r.width * E), int(r.height * E)
+    lower = max(0.0, r.y1 - it["base"])          # phần nằm dưới chân chữ
+    if _CTX.get("in_table"):
+        lower = 0.0          # trong ô bảng: ảnh đứng trên chân chữ, dòng tự cao vừa ảnh (không bị cắt)
+    return ('<w:r><w:rPr><w:position w:val="%d"/></w:rPr><w:drawing>'
+            '<wp:inline distT="0" distB="0" distL="0" distR="0"><wp:extent cx="%d" cy="%d"/>'
+            '<wp:effectExtent l="0" t="0" r="0" b="0"/><wp:docPr id="%d" name="Cong thuc %d"/>'
+            '<wp:cNvGraphicFramePr><a:graphicFrameLocks xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" noChangeAspect="1"/></wp:cNvGraphicFramePr>'
+            '<a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">'
+            '<a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">'
+            '<pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">'
+            '<pic:nvPicPr><pic:cNvPr id="%d" name="CongThuc%d.png"/><pic:cNvPicPr/></pic:nvPicPr>'
+            '<pic:blipFill><a:blip r:embed="%s"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill>'
+            '<pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="%d" cy="%d"/></a:xfrm>'
+            '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic>'
+            '</wp:inline></w:drawing></w:r>') % (-int(round(lower * 2)), cx, cy, pid, pid, pid, pid, rid, cx, cy)
+
+
+_BLANK_PNG = None
+
+
+def _blank_png():
+    global _BLANK_PNG
+    if _BLANK_PNG is None:
+        from PIL import Image
+        bio = io.BytesIO()
+        Image.new("RGBA", (4, 1), (255, 255, 255, 0)).save(bio, "PNG")
+        _BLANK_PNG = bio.getvalue()
+    return _BLANK_PNG
+
+
+def _math_runs(it):
+    """Công thức: 1 khoảng trống trong dòng (đúng bề rộng, giữ chỗ cho chữ chảy đúng)
+    + ảnh công thức NỔI đặt đúng toạ độ gốc -> không làm dòng cao lên, không đẩy chữ."""
+    E = 12700
+    r = it["rect"]
+    rid_b = _CTX["img"](_blank_png())
+    pid = _CTX["pid"][0]
+    _CTX["pid"][0] += 2
+    cx = int(r.width * E)
+    spacer = ('<w:r><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0"><wp:extent cx="%d" cy="%d"/>'
+              '<wp:effectExtent l="0" t="0" r="0" b="0"/><wp:docPr id="%d" name="Cho cong thuc %d"/>'
+              '<wp:cNvGraphicFramePr/>'
+              '<a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">'
+              '<a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">'
+              '<pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">'
+              '<pic:nvPicPr><pic:cNvPr id="%d" name="trong.png"/><pic:cNvPicPr/></pic:nvPicPr>'
+              '<pic:blipFill><a:blip r:embed="%s"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill>'
+              '<pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="%d" cy="%d"/></a:xfrm>'
+              '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic>'
+              '</wp:inline></w:drawing></w:r>') % (cx, E // 2, pid, pid, pid, rid_b, cx, E // 2)
+    rid = _CTX["img"](it["png"])
+    return spacer + anchor_xml(rid, r, pid + 1, behind=False)
+
+
 def _runs(lines):
-    """Các dòng của 1 đoạn -> XML các run (giữ font, cỡ, đậm, nghiêng, màu)."""
+    """Các dòng của 1 đoạn -> XML các run (giữ font, cỡ, đậm, nghiêng, màu).
+    Giữa các dòng của đoạn: NGẮT DÒNG MỀM (như Shift+Enter) đúng chỗ xuống dòng của bản gốc
+    -> Word không tự ngắt dòng khác đi, chữ không bị chạy / tràn trang."""
     out = []
     for li, ln in enumerate(lines):
+        if li > 0:
+            out.append("<w:r><w:br/></w:r>")
+        if getattr(ln, "items", None) is not None:
+            for k, it in enumerate(ln.items):
+                if it.get("math"):
+                    if "img" in _CTX:
+                        out.append(_inline_img(it) if _CTX.get("in_table") else _math_runs(it))
+                    continue
+                t = it["text"]
+                if k == 0:
+                    t = t.lstrip()
+                if k == len(ln.items) - 1:
+                    t = t.rstrip()
+                if not t:
+                    continue
+                out.append(_run(t, it, it.get("va")))
+            continue
         spans = [s for s in ln.spans if s["text"] != ""]
         for k, s in enumerate(spans):
             t = core.norm_text(s["text"])
@@ -66,8 +150,6 @@ def _runs(lines):
                 t = t.lstrip()
             if k == len(spans) - 1:
                 t = t.rstrip()
-            if li > 0 and k == 0:
-                t = " " + t  # nối dòng trong cùng đoạn
             if not t:
                 continue
             out.append(_run(t, s))
@@ -91,8 +173,11 @@ def _rpr(s):
     return x
 
 
-def _run(text, s):
-    return '<w:r><w:rPr>%s</w:rPr><w:t xml:space="preserve">%s</w:t></w:r>' % (_rpr(s), _esc(_clean(text)))
+def _run(text, s, va=None):
+    rp = _rpr(s)
+    if va:
+        rp += '<w:vertAlign w:val="%s"/>' % va
+    return '<w:r><w:rPr>%s</w:rPr><w:t xml:space="preserve">%s</w:t></w:r>' % (rp, _esc(_clean(text)))
 
 
 # =============================================================================
@@ -110,16 +195,38 @@ class Para:
     def last(self):
         return self.lines[-1]
 
+    @property
+    def has_math(self):
+        return any(getattr(l, "has_math", False) for l in self.lines)
+
     def pitch(self):
         if len(self.lines) > 1:
-            return (self.last.base - self.first.base) / (len(self.lines) - 1)
-        return round(self.first.size * 1.17, 2)
+            p = (self.last.base - self.first.base) / (len(self.lines) - 1)
+        else:
+            p = round(self.first.size * 1.17, 2)
+        if self._cell_math():
+            # công thức trong ô bảng: ảnh đứng trên chân chữ -> dòng cao = ảnh + phần chân chữ
+            l = self.first
+            hs = [it["rect"].height for it in l.items if it.get("math")]
+            p = max([p] + [h + l.desc * l.size for h in hs])
+        return p
+
+    def _cell_math(self):
+        return bool(_CTX.get("in_table") and self.has_math and len(self.lines) == 1)
+
+    def _base0(self):
+        l = self.first
+        if self._cell_math():
+            return max([l.base] + [it["rect"].y1 for it in l.items if it.get("math")])
+        return l.base
 
     def box_top(self):
         L = self.pitch()
-        return self.first.base - L + self.first.desc * self.first.size
+        return self._base0() - L + self.first.desc * self.first.size
 
     def box_bot(self):
+        if self._cell_math():
+            return self._base0() + self.last.desc * self.last.size
         return self.last.base + self.last.desc * self.last.size
 
 
@@ -161,14 +268,14 @@ def para_xml(p, regL, regR, space_before, anchors="", keep_with_next=False, col=
     if n > 1:
         if all(abs(l.x1 - maxx1) < 2.0 for l in ls[:-1]) and maxx1 >= regR - 8:
             jc = "both"
-            ind_r = max(0.0, regR - maxx1 - 0.6)
+            ind_r = max(0.0, regR - maxx1 - 1.0)
         elif can_center and all(abs(l.c - ls[0].c) < 2.0 for l in ls) and abs(ls[0].c - cenC) < 3.0:
             jc = "center"
             off = ls[0].c - regC
             ind_l, ind_r = max(0.0, 2 * off), max(0.0, -2 * off)
             first = 0.0
         else:
-            ind_r = max(0.0, regR - maxx1 - 2.0)
+            ind_r = 0.0          # căn trái nhiều dòng: đã ngắt dòng mềm, để rộng tránh tự xuống dòng
     else:
         l0 = ls[0]
         if can_center and abs(l0.c - cenC) < 3.0 and (col is not None or l0.x0 - regL > 4):
@@ -193,13 +300,25 @@ def para_xml(p, regL, regR, space_before, anchors="", keep_with_next=False, col=
         else:
             ind_r = max(0.0, ind_r - cut)
     L = p.pitch()
-    ppr = '<w:pPr>%s<w:spacing w:before="%d" w:after="0" w:line="%d" w:lineRule="exact"/>' \
+    rule = "atLeast" if p._cell_math() else "exact"
+    ppr = '<w:pPr>%s<w:spacing w:before="%d" w:after="0" w:line="%d" w:lineRule="%s"/>' \
           '<w:ind w:left="%d" w:right="%d" %s/><w:jc w:val="%s"/><w:rPr>%s</w:rPr></w:pPr>' % (
               "<w:keepNext/>" if keep_with_next else "",
-              max(0, tw(space_before)), tw(L), tw(ind_l), tw(ind_r),
+              max(0, tw(space_before)), tw(L), rule, tw(ind_l), tw(ind_r),
               ('w:firstLine="%d"' % tw(first)) if first >= 0 else ('w:hanging="%d"' % tw(-first)),
               jc, _rpr(ls[0].spans[0]))
     return "<w:p>%s%s%s</w:p>" % (ppr, anchors, _runs(ls))
+
+
+def tabpara_xml(lines, pp, regL, space_before, anchors=""):
+    """1 hàng các cột (đáp án A/B/C/D) -> 1 đoạn: thụt lề tới cột đầu, TAB tới các cột sau."""
+    tabs = "".join('<w:tab w:val="left" w:pos="%d"/>' % tw(l.x0 - regL) for l in lines[1:])
+    L = pp.pitch()
+    ppr = ('<w:pPr><w:tabs>%s</w:tabs><w:spacing w:before="%d" w:after="0" w:line="%d" w:lineRule="exact"/>'
+           '<w:ind w:left="%d" w:right="0" w:firstLine="0"/><w:jc w:val="left"/><w:rPr>%s</w:rPr></w:pPr>') % (
+        tabs, max(0, tw(space_before)), tw(L), tw(lines[0].x0 - regL), _rpr(lines[0].spans[0]))
+    runs = '<w:r><w:tab/></w:r>'.join(_runs([l]) for l in lines)
+    return "<w:p>%s%s%s</w:p>" % (ppr, anchors, runs)
 
 
 def spacer_xml(h, anchors=""):
@@ -362,7 +481,11 @@ def table_xml(cells, area_left, segs=None, fills=None, borderless=False):
                 tcpr += '<w:shd w:val="clear" w:color="auto" w:fill="%s"/>' % fill
             tcpr += '<w:vAlign w:val="top"/>'
             if rr == r0:
-                body = stack_xml(lines, xs[c0], xs[c1], ys[r0], cols_hint[i])
+                _CTX["in_table"] = True
+                try:
+                    body = stack_xml(lines, xs[c0], xs[c1], ys[r0], cols_hint[i])
+                finally:
+                    _CTX["in_table"] = False
             else:
                 body = spacer_xml(1)
             out.append("<w:tc><w:tcPr>%s</w:tcPr>%s</w:tc>" % (tcpr, body))
@@ -451,10 +574,10 @@ def layout_groups(free_lines):
 # =============================================================================
 #  ẢNH (chữ ký, con dấu, logo...)
 # =============================================================================
-def anchor_xml(rid, rect, pid):
+def anchor_xml(rid, rect, pid, behind=True):
     E = 12700
     return ('<w:r><w:drawing><wp:anchor distT="0" distB="0" distL="0" distR="0" simplePos="0" '
-            'relativeHeight="%d" behindDoc="1" locked="0" layoutInCell="0" allowOverlap="1">'
+            'relativeHeight="%d" behindDoc="%d" locked="0" layoutInCell="0" allowOverlap="1">'
             '<wp:simplePos x="0" y="0"/>'
             '<wp:positionH relativeFrom="page"><wp:posOffset>%d</wp:posOffset></wp:positionH>'
             '<wp:positionV relativeFrom="page"><wp:posOffset>%d</wp:posOffset></wp:positionV>'
@@ -470,14 +593,14 @@ def anchor_xml(rid, rect, pid):
             '<pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="%d" cy="%d"/></a:xfrm>'
             '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic>'
             '</wp:anchor></w:drawing></w:r>') % (
-        251659264 + pid, int(rect.x0 * E), int(rect.y0 * E), int(rect.width * E), int(rect.height * E),
+        251659264 + pid, 1 if behind else 0, int(rect.x0 * E), int(rect.y0 * E), int(rect.width * E), int(rect.height * E),
         pid, pid, pid, pid, rid, int(rect.width * E), int(rect.height * E))
 
 
 # =============================================================================
 #  XÂY DỰNG TÀI LIỆU
 # =============================================================================
-def pdf_to_docx(doc, out, dpi=200, progress=None):
+def pdf_to_docx(doc, out, dpi=200, progress=None, ocr=True):
     from docx import Document
     from docx.shared import Pt
     from docx.oxml import parse_xml
@@ -515,22 +638,51 @@ def pdf_to_docx(doc, out, dpi=200, progress=None):
         final_sect.addprevious(parse_xml(xml.replace("<w:p>", "<w:p %s>" % ns, 1) if xml.startswith("<w:p>")
                                          else xml.replace("<w:tbl>", "<w:tbl %s>" % ns, 1)))
 
+    hf_pages = []
+    _CTX["img"] = lambda png: d.part.get_or_add_image(io.BytesIO(png))[0]
+    _CTX["pid"] = pid
     n = doc.page_count
     for pno in range(n):
         page = doc[pno]
         W, H = page.rect.width, page.rect.height
         rot = page.rotation_matrix
-        raw_lines = convert._page_lines(page)
-        lines = [Ln(x, rot) for x in raw_lines]
+        # ---- trang SCAN (ảnh): nhận dạng chữ tiếng Việt offline -> văn bản Word gõ được
+        scan = None
+        if ocr:
+            try:
+                import ocrpage
+                if ocrpage.ocr_available() and ocrpage.is_scanned(page):
+                    scan = ocrpage.analyze(page)
+            except Exception:
+                scan = None
+        if scan is not None:
+            rot = fitz.Identity          # toạ độ OCR đã là toạ độ hiển thị
+            raw_lines = scan["lines"]
+        else:
+            raw_lines = convert._page_lines(page)
+        if scan is not None:
+            tables = scan["tables"]
+        else:
+            try:
+                tables = [t for t in page.find_tables().tables if t.row_count and t.col_count]
+            except Exception:
+                tables = []
+        math_rects = []
+        if scan is None:
+            # dòng nhìn thấy: gộp mảnh công thức, chỉ số trên/dưới; công thức xếp tầng -> ảnh trong dòng
+            try:
+                import vlines
+                tcells = [fitz.Rect(c) * rot for t in tables for c in t.cells if c]
+                lines, math_rects = vlines.build(page, raw_lines, rot, tcells)
+            except Exception:
+                lines = [Ln(x, rot) for x in raw_lines]
+        else:
+            lines = [Ln(x, rot) for x in raw_lines]
         lines = [l for l in lines if l.text]
-        try:
-            tables = [t for t in page.find_tables().tables if t.row_count and t.col_count]
-        except Exception:
-            tables = []
-        segs = _segments(page, rot)
+        segs = scan["segs"] if scan is not None else _segments(page, rot)
         fills = []
         try:
-            for dr in page.get_drawings():
+            for dr in (page.get_drawings() if scan is None else []):
                 f = dr.get("fill")
                 if f and len(f) == 3 and tuple(f) != (1, 1, 1) and dr.get("rect") is not None:
                     fills.append((fitz.Rect(dr["rect"]) * rot,
@@ -566,6 +718,25 @@ def pdf_to_docx(doc, out, dpi=200, progress=None):
         for g in groups:
             gl = g["lines"]
             cols = g["cols"]
+            # Dòng đáp án "A. ...  B. ...  C. ...  D. ..." (mỗi cột thẳng lề trái, mỗi hàng 1 dòng / cột)
+            # -> đoạn văn có điểm dừng TAB như người soạn đề trong Word (dễ sửa, công thức không lệch)
+            bands_g = _bands(gl)
+            tabbable = True
+            for ci, c in enumerate(cols):
+                cl = [l for l in gl if c[0] - 1 <= l.c <= c[1] + 1]
+                if cl and max(l.x0 for l in cl) - min(l.x0 for l in cl) > 2.0:
+                    tabbable = False
+            for bd in bands_g:
+                for c in cols:
+                    if sum(1 for l in bd if c[0] - 1 <= l.c <= c[1] + 1) > 1:
+                        tabbable = False
+            if tabbable and any(len(bd) > 1 for bd in bands_g):
+                for bd in bands_g:
+                    bd = sorted(bd, key=lambda l: l.x0)
+                    mainl = max(bd, key=lambda l: l.size)
+                    pp = Para([mainl])
+                    elems.append((pp.box_top(), pp.box_bot(), "tabs", (bd, pp)))
+                continue
             top = min(l.top for l in gl)
             bot = max(l.bot for l in gl)
             # ranh giới cột: giữa các khoảng trống
@@ -592,12 +763,64 @@ def pdf_to_docx(doc, out, dpi=200, progress=None):
             elems.append((p.box_top(), p.box_bot(), "para", p))
         elems.sort(key=lambda e: e[0])
 
+        # ---- chữ đầu trang / chân trang (tiêu đề, "Trang x/y", số trang) -> Header / Footer của Word
+        #      (không bị đẩy sang trang sau khi phần thân dài thêm vài pt)
+        def _no_math(e):
+            if e[2] == "para":
+                return not e[3].has_math
+            if e[2] == "tabs":
+                return not any(getattr(l, "has_math", False) for l in e[3][0])
+            if e[2] == "layout":
+                return not any(getattr(l, "has_math", False) for c in e[3] for l in c[1])
+            return False
+
+        def _hf_xml(sub, start):
+            parts, cur, prev = [], start, None
+            for top, bot, kind, data in sub:
+                gap = top - cur
+                if kind == "para":
+                    parts.append(para_xml(data, area_l, area_r, gap))
+                elif kind == "tabs":
+                    parts.append(tabpara_xml(data[0], data[1], area_l, gap))
+                else:
+                    if prev == "layout" or gap > 0.5:
+                        parts.append(spacer_xml(gap if gap > 0.5 else 1))
+                    parts.append(table_xml(data, area_l, borderless=True))
+                cur, prev = max(cur, bot), kind
+            if prev == "layout":
+                parts.append(spacer_xml(1))
+            return "".join(parts)
+
+        hdr_el = [e for e in elems if e[1] <= H * 0.075 and _no_math(e)]
+        ftr_el = [e for e in elems if e[0] >= H * 0.925 and _no_math(e)]
+        if len(hdr_el) == len(elems):
+            hdr_el = []
+        if len(ftr_el) + len(hdr_el) >= len(elems):
+            ftr_el = []
+        hdr_dist = min(e[0] for e in hdr_el) if hdr_el else 0.0
+        ftr_dist = (H - max(e[1] for e in ftr_el)) if ftr_el else 0.0
+        hf_pages.append((_hf_xml(hdr_el, hdr_dist) if hdr_el else "",
+                         _hf_xml(ftr_el, min(e[0] for e in ftr_el)) if ftr_el else ""))
+        hdr_bot = max((e[1] for e in hdr_el), default=0.0)
+        ftr_top = min((e[0] for e in ftr_el), default=H)
+        elems = [e for e in elems if e not in hdr_el and e not in ftr_el]
+
         # ---- ảnh chữ ký / con dấu
         anchors = ""
         try:
-            pieces = convert._graphics_layer(doc, pno, raw_lines, tables, dpi)
+            pieces = scan["pieces"] if scan is not None else convert._graphics_layer(doc, pno, raw_lines, tables, dpi,
+                                                                                    keep_inner=True)
         except Exception:
             pieces = []
+        # bỏ mảnh hình nằm trong vùng công thức (gạch phân số, dấu căn... đã có trong ảnh công thức)
+        if math_rects:
+            def _inside(r):
+                for m in math_rects:
+                    ix = fitz.Rect(r) & m
+                    if not ix.is_empty and ix.get_area() >= 0.6 * max(0.01, fitz.Rect(r).get_area()):
+                        return True
+                return False
+            pieces = [pc for pc in pieces if not _inside(pc[0])]
         for rect, png in pieces:
             rid, _ = d.part.get_or_add_image(io.BytesIO(png))
             anchors += anchor_xml(rid, rect, pid[0])
@@ -609,11 +832,15 @@ def pdf_to_docx(doc, out, dpi=200, progress=None):
             top_m = 36.0
         last_bot = max([e[1] for e in elems] + [top_m])
         bot_m = max(0.0, min(H - last_bot - 4, (H - last_bot) * 0.5))
+        if hdr_el:
+            top_m = max(top_m, hdr_bot + 0.5)
+        if ftr_el:
+            bot_m = max(bot_m, min(H - ftr_top + 1, H - last_bot - 1))
         sect = ('<w:sectPr %s><w:type w:val="nextPage"/><w:pgSz w:w="%d" w:h="%d"%s/>'
-                '<w:pgMar w:top="%d" w:right="%d" w:bottom="%d" w:left="%d" w:header="0" w:footer="0" w:gutter="0"/>'
+                '<w:pgMar w:top="%d" w:right="%d" w:bottom="%d" w:left="%d" w:header="%d" w:footer="%d" w:gutter="0"/>'
                 '<w:cols w:space="720"/></w:sectPr>') % (
             nsdecls("w"), tw(W), tw(H), ' w:orient="landscape"' if W > H else "",
-            tw(top_m), tw(max(0, W - area_r - 1)), tw(bot_m), tw(area_l))
+            tw(top_m), tw(max(0, W - area_r - 1)), tw(bot_m), tw(area_l), tw(hdr_dist), tw(ftr_dist))
 
         # ---- ghi nội dung
         cur = top_m
@@ -621,11 +848,14 @@ def pdf_to_docx(doc, out, dpi=200, progress=None):
         first_anchor_done = False
         for top, bot, kind, data in elems:
             gap = top - cur
-            if kind == "para":
+            if kind in ("para", "tabs"):
                 a = ""
                 if not first_anchor_done:
                     a, first_anchor_done = anchors, True
-                add(para_xml(data, area_l, area_r, gap, a))
+                if kind == "para":
+                    add(para_xml(data, area_l, area_r, gap, a))
+                else:
+                    add(tabpara_xml(data[0], data[1], area_l, gap, a))
             else:
                 if prev_kind in ("table", "layout") or gap > 0.5:
                     a = ""
@@ -652,5 +882,20 @@ def pdf_to_docx(doc, out, dpi=200, progress=None):
             final_sect = new
         if progress:
             progress(pno + 1, n)
+    # ---- gắn Header / Footer riêng cho từng trang (mỗi trang PDF = 1 section)
+    try:
+        secs = d.sections
+        for i, sec in enumerate(secs):
+            hx, fx = hf_pages[i] if i < len(hf_pages) else ("", "")
+            for part, xml in ((sec.header, hx), (sec.footer, fx)):
+                part.is_linked_to_previous = False
+                el = part._element
+                for ch in list(el):
+                    el.remove(ch)
+                root = parse_xml('<w:hdr %s>%s</w:hdr>' % (nsdecls("w", "r", "wp"), xml or spacer_xml(1)))
+                for ch in list(root):
+                    el.append(ch)
+    except Exception:
+        pass
     d.save(out)
     return out

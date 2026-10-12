@@ -296,6 +296,7 @@ class PdfDocument:
     def _reload(self, data):
         self.doc = fitz.open(stream=data, filetype="pdf")
         self._lines.clear()
+        getattr(self, "_geo", {}).clear()
 
     def undo(self):
         if not self.undo_stack:
@@ -386,14 +387,297 @@ class PdfDocument:
                             family, size, color, bold, italic)
         self._lines.pop(pno, None)
 
-    def add_text(self, pno, x, top, new_text, fm, family, size, color, bold, italic):
+    # ------------------------------------------------------------------ chữ đúng (sửa mã sai)
+    def fixed_texts(self, pno, lines, fm):
+        """Chữ của các dòng, đã sửa mã chữ sai của font (vd 'Trdng' -> 'Trảng')."""
+        try:
+            import glyphfix
+            page = self.doc[pno]
+            r = fitz.Rect(lines[0].bbox)
+            for l in lines[1:]:
+                r |= l.bbox
+            r = fitz.Rect(r.x0 - 2, r.y0 - 2, r.x1 + 2, r.y1 + 2)
+            raw = page.get_text("rawdict", clip=r * page.derotation_matrix,
+                                flags=fitz.TEXT_PRESERVE_WHITESPACE | fitz.TEXT_PRESERVE_LIGATURES)
+            glyphfix.get_fixer(fm, id(self)).fix_page_spans(page, raw)
+            rot = page.rotation_matrix
+            got = []
+            for b in raw.get("blocks", []):
+                for ln in b.get("lines", []):
+                    t = "".join(sp.get("text", "") for sp in ln["spans"])
+                    got.append((fitz.Rect(ln["bbox"]) * rot, t))
+            out = []
+            for l in lines:
+                parts = [(rb.x0, t) for rb, t in got
+                         if l.bbox.contains(fitz.Point((rb.x0 + rb.x1) / 2, (rb.y0 + rb.y1) / 2))]
+                parts.sort()
+                t = norm_text("".join(p[1] for p in parts)).strip()
+                out.append(t if t else l.text)
+            return out
+        except Exception:
+            return [l.text for l in lines]
+
+    # ------------------------------------------------------------------ đoạn văn (sửa như Word)
+    def _page_geo(self, pno):
+        """Ô bảng + đường kẻ ngang của trang (toạ độ hiển thị) – tính 1 lần."""
+        if not hasattr(self, "_geo"):
+            self._geo = {}
+        g = self._geo.get(pno)
+        if g is None:
+            page = self.doc[pno]
+            rot = page.rotation_matrix
+            cells = []
+            try:
+                for t in page.find_tables().tables:
+                    for c in t.cells:
+                        if c:
+                            cells.append(fitz.Rect(c) * rot)
+            except Exception:
+                pass
+            hs, vs = [], []
+            try:
+                import wordnative
+                hs, vs = wordnative._segments(page, rot)
+            except Exception:
+                pass
+            g = {"cells": cells, "hs": hs, "vs": vs}
+            self._geo[pno] = g
+        return g
+
+    def para_for_line(self, pno, line):
+        """Đoạn văn chứa dòng được bấm: các dòng của đoạn, vùng được phép viết (trái/phải),
+        giới hạn dưới (không đè lên chữ / đường kẻ bên dưới), căn lề, khoảng cách dòng."""
+        page = self.doc[pno]
+        H = page.rect.height
+        L = [l for l in self.lines(pno) if l.horizontal]
+        geo = self._page_geo(pno)
+
+        def center(l):
+            return fitz.Point((l.bbox.x0 + l.bbox.x1) / 2, (l.bbox.y0 + l.bbox.y1) / 2)
+
+        cell = None
+        for c in geo["cells"]:
+            if c.contains(center(line)) and (cell is None or c.get_area() < cell.get_area()):
+                cell = c
+        if cell is not None:
+            pool = [l for l in L if cell.contains(center(l))]
+            regL, regR = cell.x0 + 1.5, cell.x1 - 1.5
+        else:
+            pool = [l for l in L if not any(c.contains(center(l)) for c in geo["cells"])]
+            regL = min([l.bbox.x0 for l in pool] + [line.bbox.x0])
+            # lề phải: bằng lề trái (trang thường cân 2 bên) hoặc dòng dài nhất
+            regR = max([l.bbox.x1 for l in pool] + [line.bbox.x1, page.rect.width - regL])
+            # ô kẻ khung (không nhận được là bảng): vạch đứng hai bên dòng là mép ô
+            ly0, ly1 = line.bbox.y0, line.bbox.y1
+            for (y0, y1, x, _w) in geo.get("vs", []):
+                if y0 <= ly0 + 1 and y1 >= ly1 - 1:
+                    if x >= line.bbox.x1 - 0.5:
+                        regR = min(regR, x - 1.5)
+                    elif x <= line.bbox.x0 + 0.5:
+                        regL = max(regL, x + 1.5)
+        # ghép dòng thành đoạn (dòng trước phải "đầy" mới nối, cùng lề trái, cùng khoảng cách dòng)
+        pool = sorted(pool, key=lambda l: (round(l.origin.y, 1), l.bbox.x0))
+        full = regR - max(6.0, 0.035 * (regR - regL))
+        paras, cur = [], None
+        for l in pool:
+            if cur:
+                last = cur[-1]
+                gap = l.origin.y - last.origin.y
+                # dòng sau thuộc cùng đoạn nếu từ đầu tiên của nó KHÔNG vừa chỗ trống cuối dòng trước
+                # (Word phải ngắt dòng) – đúng cho cả đoạn căn đều lẫn căn trái
+                fw = l.text.split(" ")[0] if l.text else ""
+                fw_w = l.bbox.width * len(fw) / max(1, len(l.text)) + l.size * 0.25
+                wrapped = last.bbox.x1 >= full or last.bbox.x1 + fw_w > regR - 1
+                # dòng trước gần kín bề rộng và dòng sau không phải gạch đầu dòng / số thứ tự
+                if not wrapped and last.bbox.x1 >= regL + 0.85 * (regR - regL):
+                    wrapped = not re.match(r"^\s*([-+•*–]|\d+[.)]|[a-zđ][.)])\s", l.text)
+                ok = (abs(l.size - last.size) < 0.6 and 0.95 * last.size <= gap <= 1.75 * last.size
+                      and wrapped and l.bbox.x0 <= cur[0].bbox.x0 + 1.0
+                      and l.bbox.x0 >= regL - 1.0)
+                if ok and len(cur) >= 2:
+                    pitch = (cur[-1].origin.y - cur[0].origin.y) / (len(cur) - 1)
+                    ok = abs(gap - pitch) < 1.2 and abs(l.bbox.x0 - cur[1].bbox.x0) < 1.5
+                if ok:
+                    cur.append(l)
+                    continue
+            cur = [l]
+            paras.append(cur)
+        plines = next((p for p in paras if line in p), [line])
+        n = len(plines)
+        left = plines[1].bbox.x0 if n > 1 else plines[0].bbox.x0
+        first_indent = plines[0].bbox.x0 - left
+        maxx1 = max(l.bbox.x1 for l in plines)
+        top = min(l.bbox.y0 for l in plines)
+        bot = max(l.bbox.y1 for l in plines)
+        ids = set(id(l) for l in plines)
+        others = [l for l in L if id(l) not in ids]
+        # vật cản bên phải / trái trên cùng hàng (vd cột Quốc hiệu bên cạnh)
+        if cell is None:
+            right_obs = [o.bbox.x0 for o in others if o.bbox.y1 > top + 1 and o.bbox.y0 < bot - 1
+                         and o.bbox.x0 >= maxx1 - 1]
+            if right_obs:
+                regR = min(regR, min(right_obs) - 6)
+            left_obs = [o.bbox.x1 for o in others if o.bbox.y1 > top + 1 and o.bbox.y0 < bot - 1
+                        and o.bbox.x1 <= left + 1]
+            if left_obs:
+                regL = max(regL, max(left_obs) + 6)
+        regR = max(regR, maxx1)
+        # căn lề
+        regC = (regL + regR) / 2
+        if n > 1:
+            if all(abs(l.bbox.x1 - maxx1) < 2 for l in plines[:-1]) and maxx1 >= regR - 8:
+                align = "justify"
+            elif all(abs((l.bbox.x0 + l.bbox.x1) / 2 - (plines[0].bbox.x0 + plines[0].bbox.x1) / 2) < 2 for l in plines):
+                align = "center"
+            else:
+                align = "left"
+        else:
+            c = (line.bbox.x0 + line.bbox.x1) / 2
+            if abs(c - regC) < 3 and line.bbox.x0 - regL > 4:
+                align = "center"
+            elif abs(line.bbox.x1 - regR) < 2 and line.bbox.x0 - regL > 25:
+                align = "right"
+            else:
+                align = "left"
+        if align == "center":
+            c = (plines[0].bbox.x0 + plines[0].bbox.x1) / 2
+            half = min(c - regL, regR - c)
+            x0, x1 = c - half, c + half
+        elif align == "right":
+            x0, x1 = regL, maxx1
+        else:
+            x0, x1 = left, regR
+        # giới hạn dưới: dòng chữ / đường kẻ gần nhất bên dưới trong phạm vi ngang
+        limit = (cell.y1 - 1.0) if cell is not None else H - 20
+        for o in others:
+            if o.bbox.y0 >= bot - 1 and o.bbox.x1 > x0 + 1 and o.bbox.x0 < x1 - 1:
+                limit = min(limit, o.bbox.y0 - 0.5)
+        for (a, b, y, _w) in geo["hs"]:
+            if y >= bot - 0.5 and b > x0 + 2 and a < x1 - 2:
+                limit = min(limit, y - 1.0)
+        pitch = ((plines[-1].origin.y - plines[0].origin.y) / (n - 1)) if n > 1 else round(line.size * 1.2, 2)
+        return {"lines": plines, "x0": x0, "x1": x1, "first_indent": first_indent, "align": align,
+                "pitch": pitch, "baseline": plines[0].origin.y, "top": top, "bottom": bot,
+                "limit": limit, "cell": cell, "size": plines[0].size}
+
+    @staticmethod
+    def _wrap(font, text, size, width, first_indent=0.0):
+        """Ngắt dòng như Word: theo từ, Enter = xuống dòng cứng. -> [(chuỗi, là_dòng_cuối_đoạn)]"""
+        out = []
+        for hard in text.split("\n"):
+            line, first = "", True
+
+            def avail():
+                return width - (first_indent if first else 0.0)
+
+            for w in hard.split(" "):
+                trial = (line + " " + w) if line else w
+                if font.text_length(trial, size) <= avail():
+                    line = trial
+                    continue
+                if line:
+                    out.append((line, False))
+                    first = False
+                    line = ""
+                # từ dài hơn cả dòng -> cắt theo ký tự
+                while font.text_length(w, size) > avail() and len(w) > 1:
+                    k = len(w)
+                    while k > 1 and font.text_length(w[:k], size) > avail():
+                        k -= 1
+                    out.append((w[:k], False))
+                    first = False
+                    w = w[k:]
+                line = w
+            out.append((line, True))
+        return out
+
+    def write_para(self, page, fm, text, family, size, color, bold, italic, x0, x1, baseline,
+                   pitch, align="left", first_indent=0.0, limit=None, min_scale=0.6, min_size=4.0):
+        """Viết đoạn văn tự xuống dòng trong [x0, x1]; nếu vượt giới hạn dưới thì thu nhỏ chữ."""
+        path, fake_bold = fm.resolve(family, bold, italic)
+        if path is None:
+            raise RuntimeError("Không tìm thấy font: %s" % family)
+        font = fm.font(path)
+        asc, desc = font.ascender, abs(font.descender)
+        top = baseline - asc * size
+        width = max(10.0, x1 - x0)
+        s = size
+        while True:
+            rows = self._wrap(font, text, s, width, first_indent)
+            p = pitch * s / size
+            b0 = top + asc * s
+            bottom = b0 + (len(rows) - 1) * p + desc * s
+            # thu nhỏ dần cho tới khi vừa – KHÔNG BAO GIỜ đè lên dòng / ô bên dưới
+            # (cho phép nhỏ hơn min_scale nếu nội dung quá dài so với chỗ trống, tối thiểu min_size pt)
+            if limit is None or bottom <= limit or s <= min_size + 1e-6:
+                break
+            s = max(min_size, s - 0.25)
+        tag = font_tag(path, self.session)
+        kw = dict(fontsize=s, fontname=tag, fontfile=path, color=color)
+        if fake_bold:
+            kw.update(render_mode=2, border_width=s * 0.035)
+        para_start = True
+        for i, (t, last) in enumerate(rows):
+            y = b0 + i * p
+            ind = first_indent if para_start else 0.0
+            if t.strip():
+                tw = font.text_length(t, s)
+                if align == "center":
+                    x = x0 + (width - tw) / 2
+                elif align == "right":
+                    x = x1 - tw
+                else:
+                    x = x0 + ind
+                if align == "justify" and not last and " " in t.strip():
+                    words = t.split(" ")
+                    gaps = len(words) - 1
+                    wsum = sum(font.text_length(w, s) for w in words)
+                    sp = (width - ind - wsum) / gaps
+                    xx = x0 + ind
+                    for w in words:
+                        if w:
+                            page.insert_text(fitz.Point(xx, y) * page.derotation_matrix, w,
+                                             rotate=page.rotation, **kw)
+                        xx += font.text_length(w, s) + sp
+                else:
+                    page.insert_text(fitz.Point(x, y) * page.derotation_matrix, t, rotate=page.rotation, **kw)
+            para_start = last
+        return {"rows": len(rows), "size": s, "bottom": bottom}
+
+    def replace_para(self, pno, para, new_text, fm, family, size, color, bold, italic):
+        """Thay cả đoạn văn (1 hay nhiều dòng) – tự xuống dòng, không đè dòng dưới."""
+        self.snapshot()
+        page = self.doc[pno]
+        for ln in para["lines"]:
+            for sp in ln.spans:
+                page.add_redact_annot(self._shrunk(sp["bbox"], page), fill=False)
+        apply_text_only_redactions(page)
+        for ln in para["lines"]:
+            if ln.invisible:
+                r = fitz.Rect(ln.bbox)
+                r = fitz.Rect(r.x0 - 1, r.y0 - 1, r.x1 + 1, r.y1 + 1) * page.derotation_matrix
+                page.draw_rect(r, color=None, fill=(1, 1, 1), overlay=True, width=0)
+        info = {"rows": 0, "size": size, "bottom": para["bottom"]}
+        if new_text.strip():
+            pitch = para["pitch"] * size / max(para["size"], 1)
+            info = self.write_para(page, fm, new_text, family, size, color, bold, italic,
+                                   para["x0"], para["x1"], para["baseline"], pitch, para["align"],
+                                   para["first_indent"], para["limit"])
+        self._lines.pop(pno, None)
+        return info
+
+    def add_text(self, pno, x, top, new_text, fm, family, size, color, bold, italic, width=None):
         if not new_text.strip():
             return
         self.snapshot()
         page = self.doc[pno]
         path, _ = fm.resolve(family, bold, italic)
         asc = fm.font(path).ascender if path else 0.89
-        self.write_text(page, fm, x, top + asc * size, new_text, family, size, color, bold, italic)
+        if width:
+            self.write_para(page, fm, new_text, family, size, color, bold, italic, x, x + width,
+                            top + asc * size, size * 1.2, "left")
+        else:
+            self.write_text(page, fm, x, top + asc * size, new_text, family, size, color, bold, italic)
         self._lines.pop(pno, None)
 
     def erase_text_in_rect(self, pno, rect):
