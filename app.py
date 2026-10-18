@@ -27,8 +27,8 @@ if sys.stderr is None:
 import core
 from core import fitz
 
-APP_TITLE = "PDF Offline"
-MAIN_TITLE = "Chỉnh PDF offline (CopyRight@Minh-Đ1-06)"  # dòng hiện ở góc trên bên trái cửa sổ
+APP_TITLE = "Sửa PDF Offline"
+MAIN_TITLE = "Sửa PDF offline (CopyRight@Minh-Đ1-06)"  # dòng hiện ở góc trên bên trái cửa sổ
 VERSION = "1.0"
 
 
@@ -1117,11 +1117,24 @@ class SplitDialog(QDialog):
         base = os.path.splitext(os.path.basename(self.src_path or "van_ban"))[0]
         out_dir = os.path.dirname(self.src_path) if (self.same_dir.isChecked() and self.src_path) else self.out_dir
         out_dir = os.path.join(out_dir, base + "_tach")
+        # đặt tên file theo tiêu đề / trích yếu + ngày văn bản (bản scan phải nhận dạng chữ -> có thanh tiến trình)
+        prog = QProgressDialog("Đang tách và đặt tên file theo trích yếu văn bản...", None, 0, len(docs), self)
+        prog.setWindowTitle(APP_TITLE)
+        prog.setWindowModality(Qt.WindowModal)
+        prog.setMinimumDuration(0)
+        prog.setValue(0)
+        QApplication.processEvents()
+
+        def _pg(i, n):
+            prog.setValue(i)
+            QApplication.processEvents()
         try:
-            files = self.sp.save_docs(self.doc, docs, out_dir, base)
+            files = self.sp.save_docs(self.doc, docs, out_dir, base, progress=_pg)
         except Exception as ex:
+            prog.close()
             QMessageBox.critical(self, APP_TITLE, "Tách thất bại:\n%s" % ex)
             return
+        prog.close()
         self.files = files
         self.b_folder.setEnabled(True)
         npages = sum(len(g) for _, g in files)

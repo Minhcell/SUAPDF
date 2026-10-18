@@ -54,6 +54,8 @@ Bấm nút **Chuyển đổi** → chọn kiểu → thêm file (chọn nhiều 
   (Pb²⁺, CH₃, 10⁻³¹) là chỉ số thật của Word; công thức xếp tầng (phân số, vectơ, căn, ngoặc lớn) là ảnh nét cao đặt
   đúng chỗ trong dòng; đáp án A/B/C/D dàn bằng phím Tab; mỗi dòng xuống hàng đúng như bản gốc (ngắt dòng mềm)
   nên **không chạy chữ, không tràn trang**; chữ đầu/chân trang (số trang, "Trang x/y") nằm trong Header/Footer.
+- **PDF scan đã có sẵn lớp chữ** (máy scan tự nhận dạng): phần mềm nhận ra đây là bản scan, chỉ đưa **chữ gõ được**
+  vào Word, không giữ ảnh chụp chứa chữ → hết cảnh chữ chồng lên nhau, không cần xoá khung/ảnh.
 - **PDF scan (file ảnh) → Word:** phần mềm tự **nhận dạng chữ tiếng Việt (OCR)** ngay trên máy, không cần mạng
   (khoảng 5 giây/trang). Kết quả là văn bản Word **gõ sửa được như bình thường** – không có khung text box:
   đoạn văn, bảng Word thật dựng lại từ đường kẻ trên ảnh, trang nghiêng được tự chỉnh thẳng;
@@ -73,12 +75,16 @@ Bấm **Tách văn bản** → chọn file PDF gộp (hoặc dùng file đang m�
 - **Trang đầu mỗi văn bản** (ô xanh "▶ VĂN BẢN n"): nhận biết theo **Quốc hiệu** ở đầu trang
   (PDF có chữ: đọc chữ "CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM"; PDF scan: nhận ra gạch chân dưới
   "Độc lập - Tự do - Hạnh phúc"). Văn bản 1 trang, 2 trang hay nhiều trang đều tách đúng.
-- **Trang trống** (ô xám): tự bỏ – kể cả trang chỉ có bóng mép giấy, bụi, hoặc số trang.
+- **Trang trống** (ô xám): tự bỏ. Chỉ trang có **từ 1 dòng chữ trở lên** mới được giữ; trang không có chữ,
+  chỉ có số trang, chữ hoặc dấu đỏ **in lem / hằn từ trang khác** sang, bụi, bóng mép giấy → bỏ.
 - Trang có **số trang ở giữa phía trên** (trang 2, 3...) luôn được coi là trang tiếp theo – không bị tách nhầm;
   Quốc hiệu phải đi cặp với tên cơ quan bên trái (hoặc căn giữa trang như đơn từ). Rê chuột lên trang để xem lý do.
 - Máy nhận sai? **Bấm vào trang** để đặt / bỏ chỗ bắt đầu văn bản; **chuột phải** để đánh dấu trang trống / giữ trang.
 - Cách khác: *Theo trang trống* (trang trắng ngăn cách văn bản) hoặc *Cố định N trang mỗi văn bản*.
-- **✂ Tách & lưu** → mỗi văn bản 1 file `TênGốc_VB01.pdf`, `..._VB02.pdf`... trong thư mục `TênGốc_tach`,
+- **✂ Tách & lưu** → mỗi văn bản 1 file, **đặt tên theo tiêu đề / trích yếu + ngày văn bản, không dấu**, ví dụ
+  `Bao cao Tinh hinh thuc hien nhiem vu quy III nam 2026_10-10-2026.pdf`,
+  `Cong van V-v trien khai ke hoach chuyen doi so_22-08-2026.pdf` (bản scan: tự nhận dạng chữ phần đầu trang).
+  Không đọc được tiêu đề thì đặt `TênGốc_VB01.pdf`... Lưu trong thư mục `TênGốc_tach`,
   rồi báo: *"Đã tách thành công N văn bản (tổng X trang), đã bỏ Y trang trống"*.
 - File gốc không bị sửa; ảnh scan được chép nguyên, không giảm chất lượng.
 

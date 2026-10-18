@@ -260,6 +260,78 @@ def run(out_dir):
 
     step("Tach file PDF gop thanh tung van ban (bo trang trong)", split_check)
 
+    def split_name_check():
+        # tên file khi tách: loại văn bản + trích yếu + ngày, không dấu;
+        # trang chỉ có số trang / chữ lem mờ / dấu đỏ lem -> trang trống (bỏ)
+        import splitter
+        d = fitz.open()
+        p = d.new_page()
+        p.insert_text((300, 60), "CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM", fontname="F0", fontfile=path, fontsize=12)
+        p.insert_text((330, 76), "Độc lập - Tự do - Hạnh phúc", fontname="F0", fontfile=path, fontsize=13)
+        p.insert_text((60, 105), "Số: 125/BC-PNV", fontname="F0", fontfile=path, fontsize=13)
+        p.insert_text((330, 105), "Quận 1, ngày 10 tháng 10 năm 2026", fontname="F0", fontfile=path, fontsize=13)
+        f = fitz.Font(fontfile=path)
+        for y, t, sz in ((150, "BÁO CÁO", 15), (170, "Tình hình thực hiện nhiệm vụ quý III", 13)):
+            p.insert_text((297 - f.text_length(t, sz) / 2, y), t, fontname="F0", fontfile=path, fontsize=sz)
+        for k in range(10):
+            p.insert_text((60, 210 + k * 18), "Căn cứ nội dung dòng %d, đề nghị các đơn vị thực hiện." % k,
+                          fontname="F0", fontfile=path, fontsize=13)
+        name = splitter.doc_name(d, [0], "VB01")
+        log("    ten file: " + name)
+        assert name == "Bao cao Tinh hinh thuc hien nhiem vu quy III_10-10-2026", name
+        # trang trống kiểu scan
+        res = []
+        for kind in ("so_trang", "lem", "dau_do", "mot_dong"):
+            q = fitz.open()
+            pg = q.new_page()
+            if kind == "so_trang":
+                pg.insert_text((290, 815), "- 3 -", fontname="F0", fontfile=path, fontsize=12)
+            elif kind == "lem":
+                for k in range(15):
+                    pg.insert_text((60, 100 + k * 18), "Chữ mặt sau in hằn qua giấy dòng %d" % k,
+                                   fontname="F0", fontfile=path, fontsize=13, color=(0.7, 0.7, 0.7))
+            elif kind == "dau_do":
+                pg.draw_circle((400, 600), 45, color=(0.85, 0.1, 0.1), width=3)
+            else:
+                pg.insert_text((60, 200), "Đề nghị các đơn vị liên quan phối hợp thực hiện./.",
+                               fontname="F0", fontfile=path, fontsize=13)
+            pm = pg.get_pixmap(dpi=120)
+            sc = fitz.open()
+            sp = sc.new_page()
+            sp.insert_image(sp.rect, stream=pm.tobytes("png"))
+            res.append((kind, splitter._is_blank(sp, splitter._gray(sp))[0]))
+        log("    trang trong: %s" % res)
+        assert res == [("so_trang", True), ("lem", True), ("dau_do", True), ("mot_dong", False)], res
+
+    def scan_layer_check():
+        # PDF scan đã có lớp chữ ẩn (máy scan tự OCR): phải coi là trang scan
+        # -> Word chỉ có chữ gõ được, không giữ ảnh chứa chữ đè lên (chữ chồng)
+        import ocrpage
+        d = fitz.open()
+        p = d.new_page()
+        for k in range(12):
+            p.insert_text((60, 100 + k * 18), "Nội dung văn bản dòng %d thực hiện" % k,
+                          fontname="F0", fontfile=path, fontsize=13)
+        pm = p.get_pixmap(dpi=100)
+        s2 = fitz.open()
+        q = s2.new_page()
+        q.insert_image(q.rect, stream=pm.tobytes("png"))
+        for k in range(12):
+            q.insert_text((60, 100 + k * 18), "Nội dung văn bản dòng %d thực hiện" % k,
+                          fontname="F0", fontfile=path, fontsize=13, render_mode=3)
+        q2 = s2.new_page()
+        q2.insert_image(q2.rect, stream=pm.tobytes("png"))
+        for k in range(12):   # chữ hiện (không ẩn) nằm trên ảnh scan có cùng chữ
+            q2.insert_text((60, 100 + k * 18), "Nội dung văn bản dòng %d thực hiện" % k,
+                           fontname="F0", fontfile=path, fontsize=13)
+        r = (ocrpage.is_scanned(s2[0]), ocrpage.is_scanned(s2[1]), ocrpage.is_scanned(d[0]))
+        log("    scan co lop chu an / chu tren anh / ban so: %s" % (r,))
+        assert r == (True, True, False), r
+
+    step("PDF scan co san lop chu -> Word khong bi chu chong (nhan la trang scan)", scan_layer_check)
+
+    step("Tach: dat ten theo trich yeu + ngay (khong dau), bo trang lem / chi co so trang", split_name_check)
+
     def glyph_check():
         # font khai báo sai mã: hình chữ 'ả' nhưng đọc ra 'd' -> phải sửa thành 'ả', giữ 'd' thật
         d = fitz.open()

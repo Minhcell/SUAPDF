@@ -41,31 +41,112 @@ def _gray(page, dpi=DPI):
     return np.frombuffer(pm.samples, dtype=np.uint8).reshape(pm.height, pm.stride)[:, :pm.width].copy()
 
 
+_PAGENO_RE = re.compile(r"^[-–—(\[]*\s*(trang|page|tr\.?)?\s*\d{1,4}(\s*[/]\s*\d{1,4})?\s*[-–—)\].]*$", re.I)
+
+
+def _text_line_count(page, dpi=100):
+    """Đếm số DÒNG CHỮ thật trên ảnh trang (bản scan).
+    Bỏ qua: vết mực lem / chữ mặt sau in hằn (mờ), dấu đỏ / chữ ký màu, số trang, bụi, bóng mép giấy."""
+    import cv2
+    pm = page.get_pixmap(dpi=dpi, colorspace=fitz.csRGB, alpha=False, annots=True)
+    rgb = np.frombuffer(pm.samples, dtype=np.uint8).reshape(pm.height, pm.stride)[:, :pm.width * 3] \
+        .reshape(pm.height, pm.width, 3)
+    h, w = rgb.shape[:2]
+    y0, y1 = int(h * 0.09), int(h * 0.91)       # bỏ đầu / chân trang (số trang)
+    x0, x1 = int(w * 0.05), int(w * 0.95)       # bỏ bóng mép giấy
+    body = rgb[y0:y1, x0:x1].astype(np.int16)
+    if body.size == 0:
+        return 0
+    gray = body.mean(axis=2)
+    sat = body.max(axis=2) - body.min(axis=2)
+    paper = float(np.percentile(gray, 90))
+    if paper < 60:
+        return 0
+    norm = gray * (255.0 / paper)
+    # mực ĐEN/ĐẬM, không có màu (dấu đỏ, chữ ký xanh, vết lem màu bị loại)
+    ink = ((norm < 128) & (sat < 60)).astype(np.uint8)
+    if ink.sum() < 20:
+        return 0
+    n, _, st, _ = cv2.connectedComponentsWithStats(ink, connectivity=8)
+    px = dpi / 72.0
+    comps = []
+    for i in range(1, n):
+        cx, cy, cw, ch, area = st[i]
+        # cỡ 1 chữ / 1 âm tiết (cỡ chữ ~7–30pt); loại bụi, vạch dài, vòng dấu, khối lớn
+        if ch < 3.5 * px or ch > 30 * px or cw > 120 * px or area < 6:
+            continue
+        comps.append((cy + ch / 2.0, cx, cx + cw, ch))
+    if not comps:
+        return 0
+    comps.sort()
+    # gom các chữ cùng hàng thành dòng
+    lines = []
+    for c in comps:
+        for L in lines:
+            if abs(c[0] - L["y"]) < max(c[3], L["h"]) * 0.5:
+                L["items"].append(c)
+                L["y"] = (L["y"] * (len(L["items"]) - 1) + c[0]) / len(L["items"])
+                L["h"] = max(L["h"], c[3])
+                break
+        else:
+            lines.append({"y": c[0], "h": c[3], "items": [c]})
+    count = 0
+    for L in lines:
+        it = sorted(L["items"], key=lambda c: c[1])
+        # tách thành đoạn liền (khoảng cách giữa chữ < 3 lần chiều cao)
+        segs, cur = [], [it[0]]
+        for c in it[1:]:
+            if c[1] - cur[-1][2] > L["h"] * 3:
+                segs.append(cur)
+                cur = [c]
+            else:
+                cur.append(c)
+        segs.append(cur)
+        for sg in segs:
+            width = sg[-1][2] - sg[0][1]
+            if len(sg) >= 3 and width >= 0.08 * w:
+                count += 1
+                break
+    return count
+
+
 def _is_blank(page, g):
-    """Trang trống của bản scan: bỏ qua mép giấy (bóng máy scan) + đầu/chân trang (số trang),
-    phần thân gần như không có mực. Trang có chữ thật (kể cả './.') luôn được giữ."""
+    """Trang trống khi tách: KHÔNG có dòng chữ nào ở phần thân trang.
+    Trang chỉ có số trang, chữ / dấu đỏ in lem từ trang khác, bụi, bóng mép giấy -> trống (bỏ).
+    Trang có từ 1 dòng chữ trở lên -> giữ."""
     H = page.rect.height
     try:
-        for w in page.get_text("words"):
+        words = [w for w in page.get_text("words") if w[4].strip()]
+    except Exception:
+        words = []
+    if words:
+        body = []
+        for w in words:
             r = fitz.Rect(w[:4]) * page.rotation_matrix
             cy = (r.y0 + r.y1) / 2
-            if w[4].strip() and H * 0.09 <= cy <= H * 0.91:
-                return False, 1.0
+            if H * 0.09 <= cy <= H * 0.91:
+                body.append(w[4])
+        txt = " ".join(body).strip()
+        if txt and not _PAGENO_RE.match(txt):
+            return False, 1.0
+        # có lớp chữ nhưng chỉ là số trang -> vẫn kiểm tra ảnh (bản scan đã OCR)
+    try:
+        n = _text_line_count(page)
     except Exception:
-        pass
-    h, w = g.shape
-    body = g[int(h * 0.09):int(h * 0.91), int(w * 0.06):int(w * 0.94)]
-    if body.size == 0:
-        return True, 0.0
-    # ngưỡng thích nghi theo màu giấy (giấy scan hơi xám)
-    paper = float(np.percentile(body, 90))
-    dark = body < min(150, paper - 60)
-    ratio = float(dark.mean())
-    if ratio > 0.004:
-        return False, ratio
-    # loại bụi lẻ tẻ: đếm hàng có mực đáng kể
-    rows = (dark.sum(axis=1) >= 3).sum()
-    return rows < max(4, int(body.shape[0] * 0.012)), ratio
+        n = None
+    if n is None:          # không có OpenCV: cách cũ theo lượng mực
+        h, w = g.shape
+        body = g[int(h * 0.09):int(h * 0.91), int(w * 0.06):int(w * 0.94)]
+        if body.size == 0:
+            return True, 0.0
+        paper = float(np.percentile(body, 90))
+        dark = body < min(150, paper - 60)
+        ratio = float(dark.mean())
+        if ratio > 0.004:
+            return False, ratio
+        rows = (dark.sum(axis=1) >= 3).sum()
+        return rows < max(4, int(body.shape[0] * 0.012)), ratio
+    return n == 0, float(n)
 
 
 def _hlines(region, min_len, max_len):
@@ -277,21 +358,205 @@ def auto_starts(infos, mode="auto", every=2, blanks=None):
     return starts
 
 
-def save_docs(src_doc, docs, out_dir, base, progress=None):
-    """Lưu từng văn bản thành 1 file PDF riêng. Không ghi đè file có sẵn."""
+# =============================================================================
+#  ĐẶT TÊN FILE THEO TIÊU ĐỀ / TRÍCH YẾU + NGÀY VĂN BẢN (không dấu)
+# =============================================================================
+_DOC_TYPES = ["bao cao", "quyet dinh", "ke hoach", "to trinh", "thong bao", "cong van", "giay moi",
+              "bien ban", "chi thi", "nghi quyet", "huong dan", "chuong trinh", "de an", "phuong an",
+              "quy che", "quy dinh", "giay xac nhan", "giay gioi thieu", "giay de nghi", "giay uy quyen",
+              "thong tu", "nghi dinh", "cong dien", "danh sach", "hop dong", "don", "phieu", "bang ke",
+              "ban cam ket", "ban giao", "lenh", "tham luan", "dieu le", "loi khai", "tom tat",
+              "giay chung nhan", "giay phep", "so lieu", "bao cao nhanh", "thu moi", "ket luan"]
+_STOP_RE = re.compile(r"^(can cu|kinh gui|thuc hien|theo|xet|nham|ngay|so\s*:|noi nhan|thuc hien)")
+_DATE_RE = re.compile(r"ngay\s*(\d{1,2})\s*thang\s*(\d{1,2})\s*nam\s*(\d{4})")
+_DATE2_RE = re.compile(r"(?<!\d)(\d{1,2})\s*[/.-]\s*(\d{1,2})\s*[/.-]\s*((?:19|20)\d\d)(?!\d)")
+
+
+def no_accent(s):
+    """Bỏ dấu tiếng Việt, giữ chữ hoa/thường."""
+    s = s.replace("đ", "d").replace("Đ", "D")
+    s = unicodedata.normalize("NFD", s)
+    return unicodedata.normalize("NFC", "".join(ch for ch in s if unicodedata.category(ch) != "Mn"))
+
+
+def _page_rows(page, ocr=True):
+    """Các dòng chữ của trang: list (x0, y0, x1, y1, text) theo thứ tự trên -> dưới.
+    PDF scan không có lớp chữ thì nhận dạng chữ (OCR) nếu có dữ liệu tiếng Việt."""
+    words = []
+    try:
+        words = [w for w in page.get_text("words") if w[4].strip()]
+    except Exception:
+        pass
+    if len(words) < 8 and ocr:
+        try:
+            import ocrpage
+            if ocrpage.ocr_available():
+                words = ocrpage.ocr_top_words(page)
+                return _rows_from_words(words, fitz.Identity)
+        except Exception:
+            pass
+    return _rows_from_words(words, page.rotation_matrix)
+
+
+def _rows_from_words(words, rot):
+    if not words:
+        return []
+    rows = {}
+    for w in words:
+        r = fitz.Rect(w[:4]) * rot
+        rows.setdefault((w[5], w[6]), []).append((r, w[4]))
+    out = []
+    for ws in rows.values():
+        ws.sort(key=lambda t: t[0].x0)
+        # tách 2 cột nằm chung 1 dòng (khối cơ quan bên trái / Quốc hiệu bên phải)
+        cur = [ws[0]]
+        for t in ws[1:]:
+            h = max(1.0, cur[-1][0].height)
+            if t[0].x0 - cur[-1][0].x1 > h * 2.5:
+                out.append(cur); cur = [t]
+            else:
+                cur.append(t)
+        out.append(cur)
+    res = []
+    for ch in out:
+        x0 = min(t[0].x0 for t in ch); y0 = min(t[0].y0 for t in ch)
+        x1 = max(t[0].x1 for t in ch); y1 = max(t[0].y1 for t in ch)
+        res.append((x0, y0, x1, y1, " ".join(t[1] for t in ch)))
+    res.sort(key=lambda r: (round(r[1] / 3), r[0]))
+    return res
+
+
+def doc_info(page, ocr=True):
+    """-> (tiêu đề không dấu hoặc None, ngày 'dd-mm-yyyy' hoặc None) từ trang đầu văn bản."""
+    W, H = page.rect.width, page.rect.height
+    rows = _page_rows(page, ocr)
+    if not rows:
+        return None, None
+    # ---- ngày văn bản (ưu tiên dòng "..., ngày .. tháng .. năm ...." ở đầu trang)
+    date = None
+    for top_only in (True, False):
+        for r in rows:
+            if top_only and r[1] > H * 0.4:
+                continue
+            m = _DATE_RE.search(_plain(r[4]))
+            if m:
+                d, mo, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
+                if 1 <= d <= 31 and 1 <= mo <= 12:
+                    date = "%02d-%02d-%04d" % (d, mo, y)
+                    break
+        if date:
+            break
+    if date is None:
+        for r in rows:
+            if r[1] > H * 0.4:
+                continue
+            m = _DATE2_RE.search(r[4])
+            if m and 1 <= int(m.group(1)) <= 31 and 1 <= int(m.group(2)) <= 12:
+                date = "%02d-%02d-%s" % (int(m.group(1)), int(m.group(2)), m.group(3))
+                break
+    # ---- tên loại văn bản (dòng CHỮ IN HOA ở giữa trang, dưới Quốc hiệu) + trích yếu ngay dưới
+    hdr_bot = 0.0
+    for r in rows:
+        if r[1] < H * 0.35 and re.search(r"doc\s*lap|cong\s*hoa|ngay\s*\d|so\s*:", _plain(r[4])):
+            hdr_bot = max(hdr_bot, r[3])
+    title, ty_idx = None, None
+    for i, r in enumerate(rows):
+        if r[1] < hdr_bot - 1 or r[1] > H * 0.6:
+            continue
+        txt = r[4].strip()
+        letters = [c for c in txt if c.isalpha()]
+        if len(letters) < 2:
+            continue
+        upper = sum(c.isupper() for c in letters) / len(letters)
+        cx = (r[0] + r[2]) / 2
+        p = _plain(txt).strip(" .:")
+        known = any(p == t or p.startswith(t + " ") for t in _DOC_TYPES)
+        if upper >= 0.8 and abs(cx - W / 2) < W * 0.15 and (known or len(letters) <= 40) \
+                and not re.search(r"cong\s*hoa|doc\s*lap|uy\s*ban|nhan\s*dan$", p):
+            title, ty_idx = txt, i
+            break
+    parts = []
+    if title:
+        parts.append(title)
+        prev = rows[ty_idx]
+        lh = max(6.0, prev[3] - prev[1])
+        for r in rows[ty_idx + 1:]:
+            if r[1] - prev[3] > lh * 1.6 or len(parts) >= 4:
+                break
+            p = _plain(r[4]).strip()
+            cx = (r[0] + r[2]) / 2
+            if _STOP_RE.match(p) or abs(cx - W / 2) > W * 0.18 or set(p) <= set("-_. ") \
+                    or (r[2] - r[0]) > W * 0.72 or p.endswith(":"):
+                break
+            parts.append(r[4].strip())
+            prev = r
+    else:
+        # công văn: trích yếu "V/v ..." ở cột trái, dưới số ký hiệu
+        for i, r in enumerate(rows):
+            p = _plain(r[4]).strip()
+            if r[1] < H * 0.5 and r[0] < W * 0.5 and re.match(r"^(v\s*/\s*v|ve viec)\b", p):
+                parts = [r[4].strip()]
+                prev = r
+                for q in rows[i + 1:]:
+                    if q[1] - prev[3] > (prev[3] - prev[1]) * 1.6 or q[0] > W * 0.5 or len(parts) >= 4:
+                        break
+                    if q[2] > W * 0.55:
+                        continue
+                    parts.append(q[4].strip())
+                    prev = q
+                parts[0] = "Cong van " + parts[0]
+                break
+    if not parts:
+        return None, date
+    name = " ".join(parts)
+    name = no_accent(name)
+    # tên loại văn bản IN HOA -> chữ thường cho dễ đọc (BAO CAO -> Bao cao)
+    if title:
+        t = no_accent(title)
+        name = t[:1].upper() + t[1:].lower() + name[len(t):]
+    return safe_name(name), date
+
+
+def safe_name(s, limit=120):
+    s = s.replace("/", "-")
+    s = re.sub(r'[\\:*?"<>|\r\n\t]+', " ", s)
+    s = re.sub(r"\s+", " ", s).strip(" .-_")
+    if len(s) > limit:
+        s = s[:limit].rsplit(" ", 1)[0]
+    return s
+
+
+def doc_name(src_doc, pages, default, ocr=True):
+    """Tên file (chưa có .pdf) cho 1 văn bản: '<Loại VB + trích yếu>_<dd-mm-yyyy>' không dấu."""
+    try:
+        title, date = doc_info(src_doc[pages[0]], ocr)
+    except Exception:
+        title, date = None, None
+    name = title or default
+    if date:
+        name += "_" + date
+    return name
+
+
+def save_docs(src_doc, docs, out_dir, base, progress=None, smart_names=True):
+    """Lưu từng văn bản thành 1 file PDF riêng. Không ghi đè file có sẵn.
+    smart_names: đặt tên theo tiêu đề / trích yếu văn bản + ngày (không dấu)."""
     os.makedirs(out_dir, exist_ok=True)
     files = []
     width = max(2, len(str(len(docs))))
+    used = set()
     for k, pages in enumerate(docs):
         nd = fitz.open()
         for p in pages:
             nd.insert_pdf(src_doc, from_page=p, to_page=p)
-        name = "%s_VB%0*d.pdf" % (base, width, k + 1)
-        path = os.path.join(out_dir, name)
+        default = "%s_VB%0*d" % (base, width, k + 1)
+        stem = doc_name(src_doc, pages, default) if smart_names else default
+        path = os.path.join(out_dir, stem + ".pdf")
         i = 1
-        while os.path.exists(path):
-            path = os.path.join(out_dir, "%s_VB%0*d (%d).pdf" % (base, width, k + 1, i))
+        while os.path.exists(path) or path.lower() in used:
+            path = os.path.join(out_dir, "%s (%d).pdf" % (stem, i))
             i += 1
+        used.add(path.lower())
         nd.save(path, garbage=3, deflate=True)
         nd.close()
         files.append((path, pages))

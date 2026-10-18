@@ -62,14 +62,7 @@ def ocr_available():
 # =============================================================================
 #  NHẬN BIẾT TRANG SCAN
 # =============================================================================
-def is_scanned(page):
-    """Trang gần như không có lớp chữ nhưng có ảnh phủ phần lớn trang."""
-    try:
-        words = [w for w in page.get_text("words") if w[4].strip()]
-    except Exception:
-        words = []
-    if len(words) >= 5:
-        return False
+def _image_cover(page):
     area = page.rect.get_area()
     cover = 0.0
     try:
@@ -77,14 +70,96 @@ def is_scanned(page):
             r = fitz.Rect(info["bbox"]) & page.rect
             cover += r.get_area()
     except Exception:
+        return 0.0
+    return cover / max(1.0, area)
+
+
+def _textless(page):
+    """Bản sao của trang đã xoá hết lớp chữ (giữ ảnh, nét vẽ) -> (doc_tạm, trang_tạm)."""
+    tmp = fitz.open()
+    tmp.insert_pdf(page.parent, from_page=page.number, to_page=page.number)
+    tp = tmp[0]
+    tp.add_redact_annot(tp.rect, fill=False)
+    try:
+        tp.apply_redactions(images=getattr(fitz, "PDF_REDACT_IMAGE_NONE", 0),
+                            graphics=getattr(fitz, "PDF_REDACT_LINE_ART_NONE", 0),
+                            text=getattr(fitz, "PDF_REDACT_TEXT_REMOVE", 0))
+    except TypeError:
+        tp.apply_redactions(images=getattr(fitz, "PDF_REDACT_IMAGE_NONE", 0))
+    return tmp, tp
+
+
+def text_layer_over_scan(page, words=None):
+    """Trang SCAN đã có sẵn lớp chữ (máy scan / phần mềm OCR tạo): chữ ẩn, hoặc chữ nằm dưới / trên
+    ảnh chụp vốn đã chứa chính dòng chữ đó. Nếu giữ ảnh + chữ thì bên Word bị chữ chồng lên ảnh."""
+    if _image_cover(page) < 0.4:
         return False
-    return cover >= 0.5 * area
+    if words is None:
+        try:
+            words = [w for w in page.get_text("words") if w[4].strip()]
+        except Exception:
+            return False
+    if not words:
+        return False
+    # 1) phần lớn chữ là chữ ẩn (render mode 3 / trong suốt)
+    try:
+        tot = inv = 0
+        for sp in page.get_texttrace():
+            k = len(sp.get("chars", ()))
+            tot += k
+            if sp.get("type") == 3 or sp.get("opacity", 1) == 0:
+                inv += k
+        if tot and inv >= 0.6 * tot:
+            return True
+    except Exception:
+        pass
+    # 2) ảnh nền (đã bỏ lớp chữ) vẫn có nét chữ ngay tại vị trí các từ -> chữ bị trùng
+    try:
+        tmp, tp = _textless(page)
+        dpi = 60
+        pm = tp.get_pixmap(dpi=dpi, colorspace=fitz.csGRAY, alpha=False)
+        g = np.frombuffer(pm.samples, dtype=np.uint8).reshape(pm.height, pm.stride)[:, :pm.width]
+        sc = dpi / 72.0
+        hit = n = 0
+        for w in words:
+            r = fitz.Rect(w[:4])
+            if r.is_empty or r.width < 4:
+                continue
+            x0, x1 = int(r.x0 * sc), int(r.x1 * sc) + 1
+            y0, y1 = int((r.y0 + r.height * 0.2) * sc), int((r.y1 - r.height * 0.2) * sc) + 1
+            sub = g[max(0, y0):y1, max(0, x0):x1]
+            if sub.size == 0:
+                continue
+            n += 1
+            if (sub < 140).mean() > 0.06:
+                hit += 1
+        return n >= 5 and hit >= 0.6 * n
+    except Exception:
+        return False
+
+
+def is_scanned(page):
+    """Trang scan: gần như không có lớp chữ nhưng có ảnh phủ phần lớn trang,
+    hoặc có lớp chữ nhưng chữ đó chỉ là lớp OCR ẩn / trùng với chữ trong ảnh scan."""
+    try:
+        words = [w for w in page.get_text("words") if w[4].strip()]
+    except Exception:
+        words = []
+    if len(words) >= 5:
+        return text_layer_over_scan(page, words)
+    return _image_cover(page) >= 0.5
 
 
 # =============================================================================
 #  XỬ LÝ ẢNH
 # =============================================================================
 def _render(page, dpi):
+    tmp = None
+    try:
+        if page.get_text("words"):
+            tmp, page = _textless(page)      # chỉ lấy ảnh scan, bỏ lớp chữ có sẵn (tránh chữ đúp)
+    except Exception:
+        pass
     pm = page.get_pixmap(dpi=dpi, colorspace=fitz.csRGB, alpha=False)
     return np.frombuffer(pm.samples, dtype=np.uint8).reshape(pm.height, pm.stride)[:, :pm.width * 3] \
         .reshape(pm.height, pm.width, 3).copy()
@@ -229,7 +304,7 @@ def _tables(hor, ver, scale, dpi):
 # =============================================================================
 #  OCR
 # =============================================================================
-def _ocr_words(page_rect, img_gray):
+def _ocr_words(page_rect, img_gray, dpi=None):
     """OCR ảnh (đã xoá kẻ bảng + phần màu). Trả về list từ (x0,y0,x1,y1,text,block,line,word)."""
     d = fitz.open()
     p = d.new_page(width=page_rect.width, height=page_rect.height)
@@ -237,7 +312,7 @@ def _ocr_words(page_rect, img_gray):
     bio = io.BytesIO()
     Image.fromarray(img_gray).save(bio, "PNG")
     p.insert_image(p.rect, stream=bio.getvalue())
-    tp = p.get_textpage_ocr(language="vie", dpi=OCR_DPI, full=True, tessdata=tessdata_dir())
+    tp = p.get_textpage_ocr(language="vie", dpi=dpi or OCR_DPI, full=True, tessdata=tessdata_dir())
     # Tự tách từ theo khoảng trống THẬT giữa các chữ (thư viện hay bỏ sót dấu cách sau chữ có dấu,
     # vd "Kếhoạch", "Sốlượng")
     raw = p.get_text("rawdict", textpage=tp)
@@ -454,3 +529,41 @@ def analyze(page, dpi=OCR_DPI):
         Image.fromarray(rgba, "RGBA").save(bio, "PNG")
         pieces.append((fitz.Rect(x * scale, y * scale, (x + w) * scale, (y + h) * scale), bio.getvalue()))
     return {"lines": out, "tables": tables, "segs": segs, "pieces": pieces}
+
+
+def ocr_top_words(page, frac=0.5, dpi=200, skip_body=True):
+    """Nhận dạng nhanh phần ĐẦU trang (tiêu đề, trích yếu, ngày tháng) -> list từ như page.get_text('words')."""
+    clip = fitz.Rect(0, 0, page.rect.width, page.rect.height * frac)
+    tmp = None
+    src = page
+    try:
+        if page.get_text("words"):
+            tmp, src = _textless(page)
+    except Exception:
+        pass
+    pm = src.get_pixmap(dpi=dpi, colorspace=fitz.csGRAY, alpha=False, clip=clip)
+    g = np.frombuffer(pm.samples, dtype=np.uint8).reshape(pm.height, pm.stride)[:, :pm.width].copy()
+    if skip_body:
+        # bỏ các dòng nội dung dài hết khổ (thân văn bản) -> chỉ nhận dạng tiêu đề, trích yếu,
+        # số / ngày tháng (nhanh hơn nhiều)
+        try:
+            import cv2
+            bw = (g < min(150, int(np.percentile(g, 90)) - 60)).astype(np.uint8)
+            k = max(3, int(dpi * 0.12))
+            merged = cv2.dilate(bw, np.ones((max(1, int(dpi * 0.02)), k), np.uint8))
+            n, _, st, _ = cv2.connectedComponentsWithStats(merged, connectivity=8)
+            W = g.shape[1]
+            boxes = sorted((int(st[i][1]), int(st[i][0]), int(st[i][2]), int(st[i][3])) for i in range(1, n)
+                           if st[i][3] < dpi * 0.5 and st[i][2] > dpi * 0.3)
+            # thân văn bản bắt đầu ở 2 dòng dài liền nhau cùng lề trái -> bỏ từ đó trở xuống
+            for a, b in zip(boxes, boxes[1:]):
+                if a[2] > 0.5 * W and b[2] > 0.5 * W and abs(a[1] - b[1]) < 0.015 * W \
+                        and b[0] - a[0] < dpi * 0.6:
+                    g[a[0]:, :] = 255
+                    break
+            for (y, x, w, h) in boxes:
+                if w > 0.74 * W:
+                    g[y:y + h, x:x + w] = 255
+        except Exception:
+            pass
+    return [w for w in _ocr_words(clip, g, dpi) if w[4].strip()]
