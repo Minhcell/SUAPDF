@@ -626,13 +626,14 @@ def safe_name(s, limit=120):
 
 def doc_name(src_doc, pages, default, ocr=True):
     """Tên file (chưa có .pdf) cho 1 văn bản:
-       có trích yếu   -> 'So hoa ho so ngay 19.10.2026'
-       không trích yếu -> 'Bao cao cong tac so hoa nam 2026 ngay 19.10.2026'   (không dấu)."""
+       có trích yếu   -> 'so hoa ho so ngay 19.10.2026'
+       không trích yếu -> 'bao cao cong tac so hoa nam 2026 ngay 19.10.2026'   (không dấu, chữ thường)."""
     try:
         info = doc_info(src_doc[pages[0]], ocr)
     except Exception:
         info = {"trich_yeu": None, "tieu_de": None, "ngay": None}
-    name = safe_name(no_accent(info["trich_yeu"] or info["tieu_de"] or "")) or default
+    # không dấu, chữ thường: "Báo cáo số hóa" -> "bao cao so hoa"
+    name = safe_name(no_accent(info["trich_yeu"] or info["tieu_de"] or "")).lower() or default
     if info["ngay"]:
         name += " ngay " + info["ngay"]
     return name

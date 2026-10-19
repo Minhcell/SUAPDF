@@ -288,7 +288,7 @@ def run(out_dir):
         assert texts[0] == "Cộng hoà xã hội chủ nghĩa Việt Nam" and texts[1] == "Độc lập - Tự do - Hạnh phúc", texts
         nm = splitter.doc_name(pd.doc, [0], "VB")
         log("    ten file: " + nm)
-        assert nm == "Bao cao cong tac so hoa nam 2026 ngay 19.10.2026", nm
+        assert nm == "bao cao cong tac so hoa nam 2026 ngay 19.10.2026", nm
         assert legacy.vni("Coäng hoøa xaõ hoäi chuû nghóa Vieät Nam") == "Cộng hòa xã hội chủ nghĩa Việt Nam"
         # gõ bằng Unikey bảng mã TCVN3 -> tự đổi; font .VnTime khi gõ -> dùng Times New Roman
         assert legacy.looks_tcvn3("§· kiÓm tra", 1) and legacy.tcvn3("§· kiÓm tra") == "Đã kiểm tra"
@@ -357,8 +357,8 @@ def run(out_dir):
             p2.insert_text((297 - f.text_length(t, sz) / 2, y), t, fontname="F0", fontfile=path, fontsize=sz)
         name2 = splitter.doc_name(d2, [0], "VB02")
         log("    ten file: %s | %s" % (name, name2))
-        assert name == "Bao cao tinh hinh thuc hien nhiem vu quy III ngay 10.10.2026", name
-        assert name2 == "So hoa ho so ngay 19.10.2026", name2
+        assert name == "bao cao tinh hinh thuc hien nhiem vu quy iii ngay 10.10.2026", name
+        assert name2 == "so hoa ho so ngay 19.10.2026", name2
         # trang trống kiểu scan
         res = []
         for kind in ("so_trang", "lem", "dau_do", "mot_dong"):

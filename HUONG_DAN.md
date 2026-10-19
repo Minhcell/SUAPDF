@@ -96,10 +96,10 @@ Bấm **Tách văn bản** → chọn file PDF gộp (hoặc dùng file đang m�
 - Máy nhận sai? **Bấm vào trang** để đặt / bỏ chỗ bắt đầu văn bản; **chuột phải** để đánh dấu trang trống / giữ trang.
 - Cách khác: *Theo trang trống* (trang trắng ngăn cách văn bản) hoặc *Cố định N trang mỗi văn bản*.
 - **✂ Tách & lưu** → mỗi văn bản 1 file, **tự đặt tên theo nội dung văn bản**:
-  - Có trích yếu "V/v ..." (hoặc "Về việc ...") → lấy trích yếu + ngày dưới Quốc hiệu, **không dấu**,
-    vd `V/v số hóa hồ sơ` → **`So hoa ho so ngay 19.10.2026.pdf`**
+  - Có trích yếu "V/v ..." (hoặc "Về việc ...") → lấy trích yếu + ngày dưới Quốc hiệu, **không dấu, chữ thường**,
+    vd `V/v số hóa hồ sơ` → **`so hoa ho so ngay 19.10.2026.pdf`**
   - Không có trích yếu → lấy tên văn bản (BÁO CÁO, TỜ TRÌNH, KẾ HOẠCH...) + dòng ngay dưới + ngày, vd
-    BÁO CÁO / Công tác số hóa năm 2026 → **`Bao cao cong tac so hoa nam 2026 ngay 19.10.2026.pdf`**
+    BÁO CÁO / Công tác số hóa năm 2026 → **`bao cao cong tac so hoa nam 2026 ngay 19.10.2026.pdf`**
   - Dòng Quốc hiệu "Cộng hòa xã hội chủ nghĩa Việt Nam" không bao giờ bị lấy làm tên.
   - Bản scan: tự nhận dạng chữ phần đầu trang. Không đọc được tiêu đề thì đặt `TênGốc_VB01.pdf`...
   Lưu trong thư mục `TênGốc_tach`,
