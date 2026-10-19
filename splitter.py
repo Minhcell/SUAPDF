@@ -426,14 +426,11 @@ def _rows_from_words(words, rot):
     return res
 
 
-def doc_info(page, ocr=True):
-    """-> (tiêu đề không dấu hoặc None, ngày 'dd-mm-yyyy' hoặc None) từ trang đầu văn bản."""
-    W, H = page.rect.width, page.rect.height
-    rows = _page_rows(page, ocr)
-    if not rows:
-        return None, None
-    # ---- ngày văn bản (ưu tiên dòng "..., ngày .. tháng .. năm ...." ở đầu trang)
-    date = None
+_VV_RE = re.compile(r"^\s*(v\s*[/.]\s*v|ve\s+viec)\s*[:.]?\s*", re.I)
+
+
+def _date_of(rows, H):
+    """Ngày văn bản: dòng '..., ngày .. tháng .. năm ....' dưới Quốc hiệu -> 'dd.mm.yyyy'."""
     for top_only in (True, False):
         for r in rows:
             if top_only and r[1] > H * 0.4:
@@ -442,24 +439,88 @@ def doc_info(page, ocr=True):
             if m:
                 d, mo, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
                 if 1 <= d <= 31 and 1 <= mo <= 12:
-                    date = "%02d-%02d-%04d" % (d, mo, y)
-                    break
-        if date:
-            break
-    if date is None:
-        for r in rows:
-            if r[1] > H * 0.4:
-                continue
-            m = _DATE2_RE.search(r[4])
-            if m and 1 <= int(m.group(1)) <= 31 and 1 <= int(m.group(2)) <= 12:
-                date = "%02d-%02d-%s" % (int(m.group(1)), int(m.group(2)), m.group(3))
+                    return "%02d.%02d.%04d" % (d, mo, y)
+    for r in rows:
+        if r[1] > H * 0.4:
+            continue
+        m = _DATE2_RE.search(r[4])
+        if m and 1 <= int(m.group(1)) <= 31 and 1 <= int(m.group(2)) <= 12:
+            return "%02d.%02d.%s" % (int(m.group(1)), int(m.group(2)), m.group(3))
+    return None
+
+
+def _cap(s):
+    s = s.strip(" .,;:-–")
+    return s[:1].upper() + s[1:] if s else s
+
+
+def _low1(s):
+    """Viết thường chữ đầu ('Công tác số hóa' -> 'công tác số hóa'); giữ nguyên từ viết tắt / IN HOA."""
+    s = s.strip(" .,;:-–")
+    w = s.split(" ", 1)[0]
+    if len(w) > 1 and w.isupper():
+        return s
+    return s[:1].lower() + s[1:]
+
+
+def doc_info(page, ocr=True):
+    """Đọc trang đầu văn bản -> dict(trich_yeu, tieu_de, ngay):
+       trich_yeu: phần sau 'V/v' / 'Về việc' (vd 'Số hóa hồ sơ')
+       tieu_de  : tên loại + tên văn bản (vd 'Báo cáo công tác số hóa năm 2026')
+       ngay     : ngày ban hành dưới Quốc hiệu (vd '19.10.2026')."""
+    W, H = page.rect.width, page.rect.height
+    rows = _page_rows(page, ocr)
+    info = {"trich_yeu": None, "tieu_de": None, "ngay": None}
+    if not rows:
+        return info
+    info["ngay"] = _date_of(rows, H)
+
+    def follow(i, cond, maxn=3):
+        """Các dòng nối tiếp ngay dưới dòng i (cùng cột) thỏa cond."""
+        out, prev = [], rows[i]
+        for q in rows[i + 1:]:
+            lh = max(6.0, prev[3] - prev[1])
+            if q[1] - prev[3] > lh * 1.6 or len(out) >= maxn:
                 break
-    # ---- tên loại văn bản (dòng CHỮ IN HOA ở giữa trang, dưới Quốc hiệu) + trích yếu ngay dưới
+            if q[1] < prev[3] - lh * 0.3:      # cùng hàng (cột khác)
+                continue
+            if not cond(q):
+                if q[1] - prev[3] > -1 and abs(((q[1] + q[3]) / 2) - ((prev[1] + prev[3]) / 2)) < lh * 0.5:
+                    continue
+                break
+            out.append(q)
+            prev = q
+        return out
+
+    # ---- 1) trích yếu "V/v ..." (công văn: cột trái dưới số ký hiệu; hoặc dòng 'Về việc ...' dưới tên loại VB)
+    for i, r in enumerate(rows):
+        if r[1] > H * 0.6:
+            break
+        p = _plain(r[4])
+        m = _VV_RE.match(p)
+        if not m:
+            continue
+        # cắt đúng số ký tự của phần 'V/v' trên chuỗi gốc (cùng độ dài sau khi bỏ dấu)
+        first = r[4].strip()
+        first = first[len(first) - len(first.lstrip()):]
+        pl = _plain(first)
+        mm = _VV_RE.match(pl)
+        text = first[mm.end():] if mm else first
+        if abs((r[0] + r[2]) / 2 - W / 2) > W * 0.15:
+            more = follow(i, lambda q: q[0] < W * 0.5 and q[2] < W * 0.6 and not _STOP_RE.match(_plain(q[4]).strip()))
+        else:
+            more = follow(i, lambda q: abs((q[0] + q[2]) / 2 - W / 2) < W * 0.18 and (q[2] - q[0]) < W * 0.72
+                          and not _STOP_RE.match(_plain(q[4]).strip()))
+        text = " ".join([text] + [q[4].strip() for q in more])
+        if len([c for c in text if c.isalpha()]) >= 3:
+            info["trich_yeu"] = _cap(text)
+            break
+
+    # ---- 2) tên loại văn bản (dòng IN HOA ở giữa, dưới Quốc hiệu) + tên văn bản ngay dưới
     hdr_bot = 0.0
     for r in rows:
         if r[1] < H * 0.35 and re.search(r"doc\s*lap|cong\s*hoa|ngay\s*\d|so\s*:", _plain(r[4])):
             hdr_bot = max(hdr_bot, r[3])
-    title, ty_idx = None, None
     for i, r in enumerate(rows):
         if r[1] < hdr_bot - 1 or r[1] > H * 0.6:
             continue
@@ -471,53 +532,24 @@ def doc_info(page, ocr=True):
         cx = (r[0] + r[2]) / 2
         p = _plain(txt).strip(" .:")
         known = any(p == t or p.startswith(t + " ") for t in _DOC_TYPES)
-        if upper >= 0.8 and abs(cx - W / 2) < W * 0.15 and (known or len(letters) <= 40) \
-                and not re.search(r"cong\s*hoa|doc\s*lap|uy\s*ban|nhan\s*dan$", p):
-            title, ty_idx = txt, i
-            break
-    parts = []
-    if title:
-        parts.append(title)
-        prev = rows[ty_idx]
-        lh = max(6.0, prev[3] - prev[1])
-        for r in rows[ty_idx + 1:]:
-            if r[1] - prev[3] > lh * 1.6 or len(parts) >= 4:
-                break
-            p = _plain(r[4]).strip()
-            cx = (r[0] + r[2]) / 2
-            if _STOP_RE.match(p) or abs(cx - W / 2) > W * 0.18 or set(p) <= set("-_. ") \
-                    or (r[2] - r[0]) > W * 0.72 or p.endswith(":"):
-                break
-            parts.append(r[4].strip())
-            prev = r
-    else:
-        # công văn: trích yếu "V/v ..." ở cột trái, dưới số ký hiệu
-        for i, r in enumerate(rows):
-            p = _plain(r[4]).strip()
-            if r[1] < H * 0.5 and r[0] < W * 0.5 and re.match(r"^(v\s*/\s*v|ve viec)\b", p):
-                parts = [r[4].strip()]
-                prev = r
-                for q in rows[i + 1:]:
-                    if q[1] - prev[3] > (prev[3] - prev[1]) * 1.6 or q[0] > W * 0.5 or len(parts) >= 4:
-                        break
-                    if q[2] > W * 0.55:
-                        continue
-                    parts.append(q[4].strip())
-                    prev = q
-                parts[0] = "Cong van " + parts[0]
-                break
-    if not parts:
-        return None, date
-    name = " ".join(parts)
-    name = no_accent(name)
-    # tên loại văn bản IN HOA -> chữ thường cho dễ đọc (BAO CAO -> Bao cao)
-    if title:
-        t = no_accent(title)
-        name = t[:1].upper() + t[1:].lower() + name[len(t):]
-    return safe_name(name), date
+        if not (upper >= 0.8 and abs(cx - W / 2) < W * 0.15 and (known or len(letters) <= 40)
+                and not re.search(r"cong\s*hoa|doc\s*lap|uy\s*ban|nhan\s*dan$", p)):
+            continue
+        sub = follow(i, lambda q: abs((q[0] + q[2]) / 2 - W / 2) < W * 0.18 and (q[2] - q[0]) < W * 0.72
+                     and not _STOP_RE.match(_plain(q[4]).strip()) and not _plain(q[4]).strip().endswith(":")
+                     and not set(_plain(q[4]).strip()) <= set("-_. "))
+        sub_txt = " ".join(q[4].strip() for q in sub)
+        if sub_txt and _VV_RE.match(_plain(sub_txt)) and not info["trich_yeu"]:
+            # QUYẾT ĐỊNH / Về việc ... -> đó là trích yếu
+            info["trich_yeu"] = _cap(sub_txt[_VV_RE.match(_plain(sub_txt)).end():])
+        typ = _cap(txt.lower())
+        info["tieu_de"] = typ + (" " + _low1(sub_txt) if sub_txt and not _VV_RE.match(_plain(sub_txt)) else "")
+        break
+    return info
 
 
 def safe_name(s, limit=120):
+    s = unicodedata.normalize("NFC", s)
     s = s.replace("/", "-")
     s = re.sub(r'[\\:*?"<>|\r\n\t]+', " ", s)
     s = re.sub(r"\s+", " ", s).strip(" .-_")
@@ -527,14 +559,16 @@ def safe_name(s, limit=120):
 
 
 def doc_name(src_doc, pages, default, ocr=True):
-    """Tên file (chưa có .pdf) cho 1 văn bản: '<Loại VB + trích yếu>_<dd-mm-yyyy>' không dấu."""
+    """Tên file (chưa có .pdf) cho 1 văn bản:
+       có trích yếu   -> 'Số hóa hồ sơ ngày 19.10.2026'
+       không trích yếu -> 'Báo cáo công tác số hóa năm 2026 ngày 19.10.2026'."""
     try:
-        title, date = doc_info(src_doc[pages[0]], ocr)
+        info = doc_info(src_doc[pages[0]], ocr)
     except Exception:
-        title, date = None, None
-    name = title or default
-    if date:
-        name += "_" + date
+        info = {"trich_yeu": None, "tieu_de": None, "ngay": None}
+    name = safe_name(info["trich_yeu"] or info["tieu_de"] or "") or default
+    if info["ngay"]:
+        name += " ngày " + info["ngay"]
     return name
 
 

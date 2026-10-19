@@ -260,6 +260,37 @@ def run(out_dir):
 
     step("Tach file PDF gop thanh tung van ban (bo trang trong)", split_check)
 
+    def merge_check():
+        # gộp nhiều PDF -> 1 file; file gốc không đổi; không ghi đè file nguồn
+        import merger
+        import hashlib
+        srcs = []
+        for k, n in enumerate((2, 1, 3)):
+            d = fitz.open()
+            for i in range(n):
+                pg = d.new_page()
+                pg.insert_text((72, 100), "File %d trang %d" % (k + 1, i + 1), fontname="F0", fontfile=path, fontsize=13)
+            pth = out("gop_nguon_%d.pdf" % (k + 1))
+            d.save(pth)
+            srcs.append(pth)
+        h0 = [hashlib.md5(open(p_, "rb").read()).hexdigest() for p_ in srcs]
+        dst = out("da_gop.pdf")
+        ok, total, err = merger.merge(srcs, dst)
+        r = fitz.open(dst)
+        texts = [r[i].get_text().strip() for i in range(r.page_count)]
+        log("    gop %d file -> %d trang, muc luc %d" % (ok, r.page_count, len(r.get_toc())))
+        assert ok == 3 and total == 6 and r.page_count == 6 and not err
+        assert texts[0] == "File 1 trang 1" and texts[2] == "File 2 trang 1" and texts[5] == "File 3 trang 3", texts
+        assert [hashlib.md5(open(p_, "rb").read()).hexdigest() for p_ in srcs] == h0, "file goc bi thay doi"
+        try:
+            merger.merge(srcs, srcs[0])
+            raise AssertionError("cho phep ghi de file nguon")
+        except ValueError:
+            pass
+        assert hashlib.md5(open(srcs[0], "rb").read()).hexdigest() == h0[0]
+
+    step("Gop nhieu file PDF thanh 1 file (file goc khong doi)", merge_check)
+
     def split_name_check():
         # tên file khi tách: loại văn bản + trích yếu + ngày, không dấu;
         # trang chỉ có số trang / chữ lem mờ / dấu đỏ lem -> trang trống (bỏ)
@@ -277,8 +308,19 @@ def run(out_dir):
             p.insert_text((60, 210 + k * 18), "Căn cứ nội dung dòng %d, đề nghị các đơn vị thực hiện." % k,
                           fontname="F0", fontfile=path, fontsize=13)
         name = splitter.doc_name(d, [0], "VB01")
-        log("    ten file: " + name)
-        assert name == "Bao cao Tinh hinh thuc hien nhiem vu quy III_10-10-2026", name
+        # công văn có trích yếu "V/v ..." -> lấy trích yếu
+        d2 = fitz.open()
+        p2 = d2.new_page()
+        p2.insert_text((300, 60), "CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM", fontname="F0", fontfile=path, fontsize=12)
+        p2.insert_text((330, 76), "Độc lập – Tự do – Hạnh phúc", fontname="F0", fontfile=path, fontsize=13)
+        p2.insert_text((72, 116), "V/v số hóa hồ sơ", fontname="F0", fontfile=path, fontsize=13)
+        p2.insert_text((338, 116), "Đồng Nai, ngày 19 tháng 10 năm 2026", fontname="F0", fontfile=path, fontsize=13)
+        for y, t, sz in ((180, "BÁO CÁO", 14), (196, "Công tác số hóa năm 2026", 13)):
+            p2.insert_text((297 - f.text_length(t, sz) / 2, y), t, fontname="F0", fontfile=path, fontsize=sz)
+        name2 = splitter.doc_name(d2, [0], "VB02")
+        log("    ten file: %s | %s" % (name, name2))
+        assert name == "Báo cáo tình hình thực hiện nhiệm vụ quý III ngày 10.10.2026", name
+        assert name2 == "Số hóa hồ sơ ngày 19.10.2026", name2
         # trang trống kiểu scan
         res = []
         for kind in ("so_trang", "lem", "dau_do", "mot_dong"):
@@ -330,7 +372,7 @@ def run(out_dir):
 
     step("PDF scan co san lop chu -> Word khong bi chu chong (nhan la trang scan)", scan_layer_check)
 
-    step("Tach: dat ten theo trich yeu + ngay (khong dau), bo trang lem / chi co so trang", split_name_check)
+    step("Tach: dat ten theo trich yeu (V/v) hoac ten van ban + ngay, bo trang lem / chi co so trang", split_name_check)
 
     def glyph_check():
         # font khai báo sai mã: hình chữ 'ả' nhưng đọc ra 'd' -> phải sửa thành 'ả', giữ 'd' thật

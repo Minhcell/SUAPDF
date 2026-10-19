@@ -70,6 +70,13 @@ Bấm nút **Chuyển đổi** → chọn kiểu → thêm file (chọn nhiều 
   giống cách soạn công văn trong Word; chữ ký, con dấu nằm dưới chữ nên bấm vào chữ để sửa không bị vướng ảnh.
 - Sau khi chuyển sang PDF có nút **"Mở PDF vừa tạo để sửa"**.
 
+## Gộp PDF (Ctrl+G) – gộp nhiều file PDF thành 1 file
+Bấm **Gộp PDF** → **Thêm file...** (hoặc kéo thả nhiều file vào) → sắp thứ tự bằng **▲ Lên / ▼ Xuống**,
+kéo thả trong danh sách hoặc **Sắp xếp theo tên** → **Gộp & lưu...** → chọn tên file kết quả.
+- Các file gốc chỉ được đọc, **không bị thay đổi**; không cho lưu đè lên file gốc; trùng tên tự thêm (1), (2)...
+- Trang được chép nguyên (chữ, bảng, chữ ký, con dấu, ảnh scan không bị nén lại).
+- Có mục lục (bookmark) theo tên từng file để nhảy nhanh; file có mật khẩu / hỏng sẽ được bỏ qua và báo lại.
+
 ## Tách văn bản (Ctrl+L) – file PDF scan gộp nhiều văn bản
 Bấm **Tách văn bản** → chọn file PDF gộp (hoặc dùng file đang mở) → phần mềm tự phân tích từng trang:
 - **Trang đầu mỗi văn bản** (ô xanh "▶ VĂN BẢN n"): nhận biết theo **Quốc hiệu** ở đầu trang
@@ -81,10 +88,13 @@ Bấm **Tách văn bản** → chọn file PDF gộp (hoặc dùng file đang m�
   Quốc hiệu phải đi cặp với tên cơ quan bên trái (hoặc căn giữa trang như đơn từ). Rê chuột lên trang để xem lý do.
 - Máy nhận sai? **Bấm vào trang** để đặt / bỏ chỗ bắt đầu văn bản; **chuột phải** để đánh dấu trang trống / giữ trang.
 - Cách khác: *Theo trang trống* (trang trắng ngăn cách văn bản) hoặc *Cố định N trang mỗi văn bản*.
-- **✂ Tách & lưu** → mỗi văn bản 1 file, **đặt tên theo tiêu đề / trích yếu + ngày văn bản, không dấu**, ví dụ
-  `Bao cao Tinh hinh thuc hien nhiem vu quy III nam 2026_10-10-2026.pdf`,
-  `Cong van V-v trien khai ke hoach chuyen doi so_22-08-2026.pdf` (bản scan: tự nhận dạng chữ phần đầu trang).
-  Không đọc được tiêu đề thì đặt `TênGốc_VB01.pdf`... Lưu trong thư mục `TênGốc_tach`,
+- **✂ Tách & lưu** → mỗi văn bản 1 file, **tự đặt tên theo nội dung văn bản**:
+  - Có trích yếu "V/v ..." (hoặc "Về việc ...") → lấy trích yếu + ngày dưới Quốc hiệu,
+    vd `V/v số hóa hồ sơ` → **`Số hóa hồ sơ ngày 19.10.2026.pdf`**
+  - Không có trích yếu → lấy tên văn bản + ngày, vd BÁO CÁO / Công tác số hóa năm 2026 →
+    **`Báo cáo công tác số hóa năm 2026 ngày 19.10.2026.pdf`**
+  - Bản scan: tự nhận dạng chữ phần đầu trang. Không đọc được tiêu đề thì đặt `TênGốc_VB01.pdf`...
+  Lưu trong thư mục `TênGốc_tach`,
   rồi báo: *"Đã tách thành công N văn bản (tổng X trang), đã bỏ Y trang trống"*.
 - File gốc không bị sửa; ảnh scan được chép nguyên, không giảm chất lượng.
 

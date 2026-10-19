@@ -1163,6 +1163,195 @@ class SplitDialog(QDialog):
             pass
 
 
+class MergeDialog(QDialog):
+    """Gộp nhiều file PDF thành 1 file. File gốc chỉ được đọc, không bị sửa."""
+
+    def __init__(self, win):
+        super().__init__(win)
+        import merger
+        self.mg = merger
+        self.win = win
+        self.out_path = None
+        self.setWindowTitle("Gộp nhiều file PDF thành 1 file")
+        self.setAcceptDrops(True)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(8, 8, 8, 8)
+        outer.setSpacing(5)
+        outer.addWidget(QLabel("<b>Danh sách file PDF</b> (gộp theo thứ tự từ trên xuống; "
+                               "kéo thả file vào đây, kéo lên/xuống để đổi thứ tự):"))
+        self.files = QListWidget()
+        self.files.setSelectionMode(QListWidget.ExtendedSelection)
+        self.files.setDragDropMode(QListWidget.InternalMove)
+        self.files.setMinimumHeight(160)
+        outer.addWidget(self.files, 1)
+        r = QHBoxLayout()
+        for text, slot in ((" Thêm file... ", self.add_files), (" Bỏ file đã chọn ", self.remove_sel),
+                           (" ▲ Lên ", lambda: self.move(-1)), (" ▼ Xuống ", lambda: self.move(1)),
+                           (" Sắp xếp theo tên ", self.sort_name), (" Xoá danh sách ", self.clear)):
+            b = QToolButton(); b.setText(text); b.clicked.connect(slot)
+            r.addWidget(b)
+        r.addStretch(1)
+        outer.addLayout(r)
+        self.total_lbl = QLabel("")
+        outer.addWidget(self.total_lbl)
+        self.bm = QCheckBox("Tạo mục lục (bookmark) theo tên từng file")
+        self.bm.setChecked(True)
+        outer.addWidget(self.bm)
+        note = QLabel("🔒 Các file gốc chỉ được đọc, KHÔNG bị sửa. Kết quả là 1 file PDF mới "
+                      "(trùng tên thì tự thêm (1), (2)...).")
+        note.setStyleSheet("QLabel{background:#eef8ee;border:1px solid #b9dfb9;padding:6px;border-radius:4px;}")
+        note.setWordWrap(True)
+        outer.addWidget(note)
+        bb = QHBoxLayout()
+        self.b_go = QToolButton(); self.b_go.setText("  ⧉ Gộp && lưu...  ")
+        f = self.b_go.font(); f.setBold(True); self.b_go.setFont(f)
+        self.b_go.clicked.connect(self.do_merge)
+        self.b_folder = QToolButton(); self.b_folder.setText(" Mở thư mục kết quả ")
+        self.b_folder.clicked.connect(self.open_folder)
+        self.b_folder.setEnabled(False)
+        self.b_edit = QToolButton(); self.b_edit.setText(" Mở file vừa gộp ")
+        self.b_edit.clicked.connect(self.open_result)
+        self.b_edit.setEnabled(False)
+        b_close = QToolButton(); b_close.setText(" Đóng "); b_close.clicked.connect(self.reject)
+        for b in (self.b_go, self.b_folder, self.b_edit):
+            bb.addWidget(b)
+        bb.addStretch(1)
+        bb.addWidget(b_close)
+        outer.addLayout(bb)
+        self.files.model().rowsMoved.connect(lambda *_: self.update_total())
+        self.resize(640, 440)
+        if win.pdf and os.path.isfile(win.pdf.path):
+            self._add(win.pdf.path)
+        self.update_total()
+
+    def _add(self, p):
+        p = os.path.normpath(p)
+        for i in range(self.files.count()):
+            if self.files.item(i).data(Qt.UserRole) == p:
+                return
+        n = self.mg.page_count(p)
+        it = QListWidgetItem("%s   (%s)" % (p, ("%d trang" % n) if n is not None else "không mở được / có mật khẩu"))
+        it.setData(Qt.UserRole, p)
+        it.setData(Qt.UserRole + 1, n or 0)
+        if n is None:
+            it.setForeground(QColor("#b3261e"))
+        self.files.addItem(it)
+
+    def add_files(self):
+        ps, _ = QFileDialog.getOpenFileNames(self, "Chọn các file PDF cần gộp", self.win.last_dir, "PDF (*.pdf)")
+        for p in ps:
+            self._add(p)
+        if ps:
+            self.win.last_dir = os.path.dirname(ps[0])
+        self.update_total()
+
+    def dragEnterEvent(self, e):
+        if e.mimeData().hasUrls():
+            e.acceptProposedAction()
+
+    def dropEvent(self, e):
+        for u in e.mimeData().urls():
+            p = u.toLocalFile()
+            if p.lower().endswith(".pdf"):
+                self._add(p)
+        self.update_total()
+
+    def remove_sel(self):
+        for it in self.files.selectedItems():
+            self.files.takeItem(self.files.row(it))
+        self.update_total()
+
+    def clear(self):
+        self.files.clear()
+        self.update_total()
+
+    def move(self, d):
+        rows = sorted((self.files.row(it) for it in self.files.selectedItems()), reverse=d > 0)
+        for r in rows:
+            nr = r + d
+            if 0 <= nr < self.files.count():
+                it = self.files.takeItem(r)
+                self.files.insertItem(nr, it)
+                it.setSelected(True)
+
+    def sort_name(self):
+        items = [self.files.takeItem(0) for _ in range(self.files.count())]
+        items.sort(key=lambda it: os.path.basename(it.data(Qt.UserRole)).lower())
+        for it in items:
+            self.files.addItem(it)
+
+    def paths(self):
+        return [self.files.item(i).data(Qt.UserRole) for i in range(self.files.count())]
+
+    def update_total(self):
+        n = self.files.count()
+        pages = sum(self.files.item(i).data(Qt.UserRole + 1) or 0 for i in range(n))
+        self.total_lbl.setText("Tổng: <b>%d file</b>, <b>%d trang</b>" % (n, pages))
+
+    def do_merge(self):
+        ps = self.paths()
+        if len(ps) < 2:
+            QMessageBox.information(self, APP_TITLE, "Hãy thêm ít nhất 2 file PDF để gộp.")
+            return
+        d0 = os.path.dirname(ps[0])
+        sug = self.mg.unique_path(os.path.join(d0, os.path.splitext(os.path.basename(ps[0]))[0] + "_gop.pdf"))
+        out, _ = QFileDialog.getSaveFileName(self, "Lưu file PDF đã gộp", sug, "PDF (*.pdf)")
+        if not out:
+            return
+        if not out.lower().endswith(".pdf"):
+            out += ".pdf"
+        out = os.path.normpath(out)
+        if os.path.normcase(out) in [os.path.normcase(os.path.abspath(p)) for p in ps]:
+            QMessageBox.warning(self, APP_TITLE, "Không được lưu đè lên file gốc – hãy chọn tên khác.")
+            return
+        prog = QProgressDialog("Đang gộp file PDF...", None, 0, len(ps), self)
+        prog.setWindowTitle(APP_TITLE)
+        prog.setWindowModality(Qt.WindowModal)
+        prog.setMinimumDuration(0)
+
+        def _pg(i, n):
+            prog.setValue(i)
+            QApplication.processEvents()
+        try:
+            ok, total, errors = self.mg.merge(ps, out, self.bm.isChecked(), _pg)
+        except Exception as ex:
+            prog.close()
+            QMessageBox.critical(self, APP_TITLE, "Gộp thất bại:\n%s" % ex)
+            return
+        prog.close()
+        self.out_path = out
+        self.b_folder.setEnabled(True)
+        self.b_edit.setEnabled(True)
+        self.win.last_dir = os.path.dirname(out)
+        msg = ("Đã gộp thành công <b>%d/%d file</b> thành 1 file PDF (tổng <b>%d trang</b>).<br>Lưu tại: %s"
+               % (ok, len(ps), total, out))
+        if errors:
+            msg += "<br><br><span style='color:#b3261e'>Bỏ qua %d file:<br>%s</span>" % (
+                len(errors), "<br>".join("• %s – %s" % (os.path.basename(p), why) for p, why in errors[:10]))
+        msg += "<br>Các file gốc giữ nguyên, không bị thay đổi."
+        box = QMessageBox(QMessageBox.Information if not errors else QMessageBox.Warning,
+                          "Kết quả gộp file", msg, QMessageBox.Ok, self)
+        box.setTextFormat(Qt.RichText)
+        box.exec_()
+
+    def open_folder(self):
+        if not self.out_path:
+            return
+        try:
+            import subprocess
+            if sys.platform.startswith("win"):
+                subprocess.Popen(["explorer", "/select,", os.path.normpath(self.out_path)])
+            else:
+                subprocess.Popen(["xdg-open", os.path.dirname(self.out_path)])
+        except Exception:
+            pass
+
+    def open_result(self):
+        if self.out_path and self.win.confirm_discard():
+            self.win.open_file(self.out_path)
+            self.accept()
+
+
 # =============================================================================
 #  CỬA SỔ CHÍNH
 # =============================================================================
@@ -1220,7 +1409,10 @@ class MainWindow(QMainWindow):
         self.a_split = self._act("Tách văn bản", self.split_dialog, "Ctrl+L",
                                  "Tách file PDF scan gộp nhiều văn bản thành từng file, bỏ trang trống",
                                  icon=QStyle.SP_FileDialogDetailedView)
-        for a in (self.a_open, self.a_save, self.a_convert, self.a_split):
+        self.a_merge = self._act("Gộp PDF", self.merge_dialog, "Ctrl+G",
+                                 "Gộp nhiều file PDF thành 1 file (các file gốc không bị thay đổi)",
+                                 icon=QStyle.SP_FileDialogListView)
+        for a in (self.a_open, self.a_save, self.a_convert, self.a_split, self.a_merge):
             tb.addAction(a)
         tb.addSeparator()
         tb.addAction(self.a_undo)
@@ -1315,6 +1507,7 @@ class MainWindow(QMainWindow):
         fm_.addAction(self.a_save)
         fm_.addAction(self.a_convert)
         fm_.addAction(self.a_split)
+        fm_.addAction(self.a_merge)
         fm_.addSeparator()
         fm_.addAction(self._act("Thoát", self.close, "Ctrl+Q"))
         em = m.addMenu("&Sửa")
@@ -1574,6 +1767,9 @@ class MainWindow(QMainWindow):
 
     def split_dialog(self):
         SplitDialog(self).exec_()
+
+    def merge_dialog(self):
+        MergeDialog(self).exec_()
 
     # ------------------------------------------------------------------ trang
     def page_rect(self):
