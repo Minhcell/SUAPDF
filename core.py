@@ -149,6 +149,13 @@ class FontManager:
 
     def resolve(self, family, bold=False, italic=False):
         """-> (path, fake_bold)"""
+        try:
+            import legacy
+            if legacy.is_legacy_family(family):
+                # font mã cũ (.VnTime / VNI-Times) không gõ được chữ Unicode -> dùng font Unicode tương ứng
+                family = legacy.unicode_family(family)
+        except Exception:
+            pass
         e = self.families.get(family) or self.families.get(self.default_family())
         if e is None:
             return None, False
@@ -215,6 +222,15 @@ class Line:
 _NORM = {0x00AD: "-", 0x2010: "-", 0x2011: "-", 0x2012: "-", 0x2212: "-",
          0x00A0: " ", 0x2007: " ", 0x202F: " ", 0xFEFF: None, 0x200B: None,
          0x0000: None, 0xFFFD: None}  # ký tự hỏng (ô vuông) -> bỏ, để gõ lại
+
+
+def _legacy_fix(dd):
+    """Chữ mã cũ (TCVN3 .VnTime / VNI-Times) -> Unicode."""
+    try:
+        import legacy
+        legacy.fix_dict(dd)
+    except Exception:
+        pass
 
 
 def norm_text(s):
@@ -320,6 +336,7 @@ class PdfDocument:
             page = self.doc[pno]
             flags = fitz.TEXT_PRESERVE_WHITESPACE | fitz.TEXT_PRESERVE_LIGATURES | getattr(fitz, "TEXT_MEDIABOX_CLIP", 0)
             d = page.get_text("dict", flags=flags)
+            _legacy_fix(d)
             out = []
             for b in d["blocks"]:
                 if b.get("type", 0) != 0:
@@ -399,6 +416,7 @@ class PdfDocument:
             r = fitz.Rect(r.x0 - 2, r.y0 - 2, r.x1 + 2, r.y1 + 2)
             raw = page.get_text("rawdict", clip=r * page.derotation_matrix,
                                 flags=fitz.TEXT_PRESERVE_WHITESPACE | fitz.TEXT_PRESERVE_LIGATURES)
+            _legacy_fix(raw)
             glyphfix.get_fixer(fm, id(self)).fix_page_spans(page, raw)
             rot = page.rotation_matrix
             got = []
@@ -741,7 +759,10 @@ class PdfDocument:
             for i, page in enumerate(self.doc):
                 if i:
                     f.write("\n\n")
-                f.write(page.get_text("text", sort=True))
+                dd = page.get_text("dict", sort=True)
+                _legacy_fix(dd)
+                f.write("\n".join("".join(sp["text"] for sp in ln["spans"]).rstrip()
+                                   for b in dd["blocks"] if b.get("type", 0) == 0 for ln in b["lines"]))
 
     def save_docx_flow(self, out, progress=None):
         """Word dạng chảy (pdf2docx): sửa thoải mái, bảng thành bảng Word, có thể lệch nhẹ."""
@@ -834,6 +855,7 @@ def _docx_build(doc, out, dpi, with_text, progress=None):
             rot = page.rotation_matrix
             rot0 = fitz.Matrix(rot.a, rot.b, rot.c, rot.d, 0, 0)
             dd = page.get_text("dict", flags=fitz.TEXT_PRESERVE_WHITESPACE | fitz.TEXT_PRESERVE_LIGATURES)
+            _legacy_fix(dd)
             for b in dd["blocks"]:
                 if b.get("type", 0) != 0:
                     continue

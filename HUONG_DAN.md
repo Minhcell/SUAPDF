@@ -70,6 +70,13 @@ Bấm nút **Chuyển đổi** → chọn kiểu → thêm file (chọn nhiều 
   giống cách soạn công văn trong Word; chữ ký, con dấu nằm dưới chữ nên bấm vào chữ để sửa không bị vướng ảnh.
 - Sau khi chuyển sang PDF có nút **"Mở PDF vừa tạo để sửa"**.
 
+## Văn bản soạn bằng font cũ .VnTime (TCVN3) / VNI-Times
+PDF xuất từ văn bản dùng font .VnTime, .VnTimeH, .VnArial (bảng mã TCVN3/ABC) hoặc VNI-Times: phần mềm tự đổi chữ
+sang Unicode → khi bấm sửa hiện đúng tiếng Việt (không còn kiểu "Céng hoµ x· héi"), chữ mới viết bằng
+Times New Roman (Unicode); chuyển Word / Excel / TXT và tách văn bản cũng đọc đúng chữ.
+Gõ bằng Unikey để bảng mã TCVN3 hoặc "Unicode tổ hợp" cũng tự đổi về Unicode chuẩn.
+(Nên để Unikey bảng mã **Unicode** khi dùng phần mềm này.)
+
 ## Gộp PDF (Ctrl+G) – gộp nhiều file PDF thành 1 file
 Bấm **Gộp PDF** → **Thêm file...** (hoặc kéo thả nhiều file vào) → sắp thứ tự bằng **▲ Lên / ▼ Xuống**,
 kéo thả trong danh sách hoặc **Sắp xếp theo tên** → **Gộp & lưu...** → chọn tên file kết quả.
@@ -89,10 +96,11 @@ Bấm **Tách văn bản** → chọn file PDF gộp (hoặc dùng file đang m�
 - Máy nhận sai? **Bấm vào trang** để đặt / bỏ chỗ bắt đầu văn bản; **chuột phải** để đánh dấu trang trống / giữ trang.
 - Cách khác: *Theo trang trống* (trang trắng ngăn cách văn bản) hoặc *Cố định N trang mỗi văn bản*.
 - **✂ Tách & lưu** → mỗi văn bản 1 file, **tự đặt tên theo nội dung văn bản**:
-  - Có trích yếu "V/v ..." (hoặc "Về việc ...") → lấy trích yếu + ngày dưới Quốc hiệu,
-    vd `V/v số hóa hồ sơ` → **`Số hóa hồ sơ ngày 19.10.2026.pdf`**
-  - Không có trích yếu → lấy tên văn bản + ngày, vd BÁO CÁO / Công tác số hóa năm 2026 →
-    **`Báo cáo công tác số hóa năm 2026 ngày 19.10.2026.pdf`**
+  - Có trích yếu "V/v ..." (hoặc "Về việc ...") → lấy trích yếu + ngày dưới Quốc hiệu, **không dấu**,
+    vd `V/v số hóa hồ sơ` → **`So hoa ho so ngay 19.10.2026.pdf`**
+  - Không có trích yếu → lấy tên văn bản (BÁO CÁO, TỜ TRÌNH, KẾ HOẠCH...) + dòng ngay dưới + ngày, vd
+    BÁO CÁO / Công tác số hóa năm 2026 → **`Bao cao cong tac so hoa nam 2026 ngay 19.10.2026.pdf`**
+  - Dòng Quốc hiệu "Cộng hòa xã hội chủ nghĩa Việt Nam" không bao giờ bị lấy làm tên.
   - Bản scan: tự nhận dạng chữ phần đầu trang. Không đọc được tiêu đề thì đặt `TênGốc_VB01.pdf`...
   Lưu trong thư mục `TênGốc_tach`,
   rồi báo: *"Đã tách thành công N văn bản (tổng X trang), đã bỏ Y trang trống"*.

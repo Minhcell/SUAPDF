@@ -79,6 +79,7 @@ def _page_lines(page):
     rot = page.rotation_matrix
     rot0 = fitz.Matrix(rot.a, rot.b, rot.c, rot.d, 0, 0)
     dd = page.get_text("rawdict", flags=fitz.TEXT_PRESERVE_WHITESPACE | fitz.TEXT_PRESERVE_LIGATURES)
+    core._legacy_fix(dd)     # chữ .VnTime / VNI-Times -> Unicode
     # sửa chữ bị font khai báo sai mã (vd "Trảng" đọc ra "Trdng") – so hình chữ thật trên trang
     try:
         import glyphfix

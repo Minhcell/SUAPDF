@@ -1874,6 +1874,14 @@ class MainWindow(QMainWindow):
             return
         try:
             text = text.replace("\r", "").rstrip("\n")
+            # chữ gõ bằng Unikey bảng mã TCVN3 / "Unicode tổ hợp" -> Unicode dựng sẵn (hiện đúng tiếng Việt)
+            try:
+                import legacy
+                if legacy.looks_tcvn3(text, 1):
+                    text = legacy.tcvn3(text)
+                text = legacy.nfc(text)
+            except Exception:
+                pass
             args = (self.fm, self.cur_family(), self.cur_size(), self.cur_color, self.cur_bold(), self.cur_italic())
             msg = ""
             if ctx[0] == "para":

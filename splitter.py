@@ -384,9 +384,12 @@ def _page_rows(page, ocr=True):
     PDF scan không có lớp chữ thì nhận dạng chữ (OCR) nếu có dữ liệu tiếng Việt."""
     words = []
     try:
-        words = [w for w in page.get_text("words") if w[4].strip()]
+        words = _dict_words(page)
     except Exception:
-        pass
+        try:
+            words = [w for w in page.get_text("words") if w[4].strip()]
+        except Exception:
+            pass
     if len(words) < 8 and ocr:
         try:
             import ocrpage
@@ -396,6 +399,31 @@ def _page_rows(page, ocr=True):
         except Exception:
             pass
     return _rows_from_words(words, page.rotation_matrix)
+
+
+def _dict_words(page):
+    """Như page.get_text('words') nhưng chữ font mã cũ (.VnTime TCVN3, VNI-Times) đã đổi sang Unicode."""
+    import legacy
+    raw = page.get_text("rawdict")
+    legacy.fix_dict(raw)
+    words = []
+    for bi, b in enumerate(raw.get("blocks", [])):
+        if b.get("type", 0) != 0:
+            continue
+        for li, ln in enumerate(b.get("lines", [])):
+            wi, cur = 0, []
+            chars = [c for sp in ln.get("spans", []) for c in sp.get("chars", [])]
+            for c in chars + [None]:
+                if c is None or not c["c"].strip():
+                    if cur:
+                        words.append((min(x["bbox"][0] for x in cur), min(x["bbox"][1] for x in cur),
+                                      max(x["bbox"][2] for x in cur), max(x["bbox"][3] for x in cur),
+                                      "".join(x["c"] for x in cur), bi, li, wi))
+                        wi += 1
+                        cur = []
+                    continue
+                cur.append(c)
+    return words
 
 
 def _rows_from_words(words, rot):
@@ -509,7 +537,7 @@ def doc_info(page, ocr=True):
         if abs((r[0] + r[2]) / 2 - W / 2) > W * 0.15:
             more = follow(i, lambda q: q[0] < W * 0.5 and q[2] < W * 0.6 and not _STOP_RE.match(_plain(q[4]).strip()))
         else:
-            more = follow(i, lambda q: abs((q[0] + q[2]) / 2 - W / 2) < W * 0.18 and (q[2] - q[0]) < W * 0.72
+            more = follow(i, lambda q: abs((q[0] + q[2]) / 2 - W / 2) < W * 0.06 and (q[2] - q[0]) < W * 0.72
                           and not _STOP_RE.match(_plain(q[4]).strip()))
         text = " ".join([text] + [q[4].strip() for q in more])
         if len([c for c in text if c.isalpha()]) >= 3:
@@ -519,23 +547,47 @@ def doc_info(page, ocr=True):
     # ---- 2) tên loại văn bản (dòng IN HOA ở giữa, dưới Quốc hiệu) + tên văn bản ngay dưới
     hdr_bot = 0.0
     for r in rows:
-        if r[1] < H * 0.35 and re.search(r"doc\s*lap|cong\s*hoa|ngay\s*\d|so\s*:", _plain(r[4])):
+        if r[1] < H * 0.35 and (_is_qh(r[4]) or re.search(r"ngay\s*\d|so\s*:", _plain(r[4]))):
             hdr_bot = max(hdr_bot, r[3])
-    for i, r in enumerate(rows):
+
+    # lề trái của thân văn bản (các dòng dài) -> dòng bắt đầu ở lề đó là nội dung, không phải tên văn bản
+    longs = sorted(round(r[0]) for r in rows if (r[2] - r[0]) > W * 0.45)
+    body_x = longs[len(longs) // 2] if longs else None
+
+    def is_body(q):
+        return body_x is not None and abs(q[0] - body_x) < 6 and (q[2] - q[0]) > W * 0.45
+
+    def cand(i, r, strict):
         if r[1] < hdr_bot - 1 or r[1] > H * 0.6:
-            continue
+            return False
         txt = r[4].strip()
+        if _is_qh(txt):
+            return False
         letters = [c for c in txt if c.isalpha()]
         if len(letters) < 2:
-            continue
+            return False
         upper = sum(c.isupper() for c in letters) / len(letters)
         cx = (r[0] + r[2]) / 2
-        p = _plain(txt).strip(" .:")
+        p = re.sub(r"\s+", " ", _plain(txt)).strip(" .:")
+        if re.search(r"uy\s*ban|ubnd|nhan\s*dan$|^so\s*:", p):
+            return False
         known = any(p == t or p.startswith(t + " ") for t in _DOC_TYPES)
-        if not (upper >= 0.8 and abs(cx - W / 2) < W * 0.15 and (known or len(letters) <= 40)
-                and not re.search(r"cong\s*hoa|doc\s*lap|uy\s*ban|nhan\s*dan$", p)):
-            continue
-        sub = follow(i, lambda q: abs((q[0] + q[2]) / 2 - W / 2) < W * 0.18 and (q[2] - q[0]) < W * 0.72
+        if strict:      # lượt 1: đúng tên loại văn bản (BÁO CÁO, QUYẾT ĐỊNH, KẾ HOẠCH...)
+            return known and (upper >= 0.6 or p in _DOC_TYPES) and abs(cx - W / 2) < W * 0.2
+        return upper >= 0.8 and abs(cx - W / 2) < W * 0.15 and len(letters) <= 40
+
+    hit = None
+    for strict in (True, False):
+        for i, r in enumerate(rows):
+            if cand(i, r, strict):
+                hit = i
+                break
+        if hit is not None:
+            break
+    if hit is not None:
+        txt = rows[hit][4].strip()
+        sub = follow(hit, lambda q: abs((q[0] + q[2]) / 2 - W / 2) < W * 0.06 and (q[2] - q[0]) < W * 0.72
+                     and not _is_qh(q[4]) and not is_body(q)
                      and not _STOP_RE.match(_plain(q[4]).strip()) and not _plain(q[4]).strip().endswith(":")
                      and not set(_plain(q[4]).strip()) <= set("-_. "))
         sub_txt = " ".join(q[4].strip() for q in sub)
@@ -544,8 +596,22 @@ def doc_info(page, ocr=True):
             info["trich_yeu"] = _cap(sub_txt[_VV_RE.match(_plain(sub_txt)).end():])
         typ = _cap(txt.lower())
         info["tieu_de"] = typ + (" " + _low1(sub_txt) if sub_txt and not _VV_RE.match(_plain(sub_txt)) else "")
-        break
     return info
+
+
+_QH_KEYS = ("conghoaxahoi", "xahoichunghia", "chunghiavietnam", "doclaptudo", "tudohanhphuc", "hanhphuc")
+_QH_TOKS = {"cong", "hoa", "xa", "hoi", "chu", "nghia", "viet", "nam", "doc", "lap", "tu", "do", "hanh", "phuc"}
+
+
+def _is_qh(txt):
+    """Dòng Quốc hiệu / Tiêu ngữ (kể cả khi chữ giãn cách 'C Ộ N G  H Ò A' hoặc nhận dạng sai 1-2 chữ)."""
+    p = _plain(txt)
+    flat = re.sub(r"[^a-z]", "", p)
+    if any(k in flat for k in _QH_KEYS):
+        return True
+    toks = set(re.findall(r"[a-z]+", p))
+    anchor = {"cong", "hoa"} <= toks or {"doc", "lap"} <= toks or {"hanh", "phuc"} <= toks
+    return anchor and len(toks & _QH_TOKS) >= 4
 
 
 def safe_name(s, limit=120):
@@ -560,15 +626,15 @@ def safe_name(s, limit=120):
 
 def doc_name(src_doc, pages, default, ocr=True):
     """Tên file (chưa có .pdf) cho 1 văn bản:
-       có trích yếu   -> 'Số hóa hồ sơ ngày 19.10.2026'
-       không trích yếu -> 'Báo cáo công tác số hóa năm 2026 ngày 19.10.2026'."""
+       có trích yếu   -> 'So hoa ho so ngay 19.10.2026'
+       không trích yếu -> 'Bao cao cong tac so hoa nam 2026 ngay 19.10.2026'   (không dấu)."""
     try:
         info = doc_info(src_doc[pages[0]], ocr)
     except Exception:
         info = {"trich_yeu": None, "tieu_de": None, "ngay": None}
-    name = safe_name(info["trich_yeu"] or info["tieu_de"] or "") or default
+    name = safe_name(no_accent(info["trich_yeu"] or info["tieu_de"] or "")) or default
     if info["ngay"]:
-        name += " ngày " + info["ngay"]
+        name += " ngay " + info["ngay"]
     return name
 
 

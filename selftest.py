@@ -260,6 +260,43 @@ def run(out_dir):
 
     step("Tach file PDF gop thanh tung van ban (bo trang trong)", split_check)
 
+    def legacy_check():
+        # PDF soạn bằng font .VnTime (mã TCVN3): sửa chữ / chuyển Word / tách văn bản phải ra đúng tiếng Việt
+        import legacy
+        import splitter
+        d = fitz.open()
+        pg = d.new_page()
+        rows = [("Céng hoµ x· héi chñ nghÜa ViÖt Nam", 300, 60), ("§éc lËp - Tù do - H¹nh phóc", 330, 76),
+                ("Th«n A, ngµy 19 th¸ng 10 n¨m 2026", 330, 110), ("B¸O C¸O", 270, 170),
+                ("C«ng t¸c sè ho¸ n¨m 2026", 230, 188)]
+        for t, x, y in rows:
+            pg.insert_text((x, y), t, fontname="tiro", fontsize=13)
+        for k in range(6):
+            pg.insert_text((72, 230 + k * 18), "Néi dung v¨n b¶n dßng %d, ®Ò nghÞ c¸c ®¬n vÞ thùc hiÖn nghiªm tóc dßng dµi." % k,
+                           fontname="tiro", fontsize=13)
+        src = out("vntime.pdf")
+        d.save(src)
+        d = fitz.open(src)
+        for x in range(1, d.xref_length()):
+            if d.xref_get_key(x, "Type")[1] == "/Font":
+                d.xref_set_key(x, "BaseFont", "/.VnTime")
+        src2 = out("vntime2.pdf")
+        d.save(src2)
+        pd = core.PdfDocument(src2)
+        texts = [l.text for l in pd.lines(0)]
+        log("    .VnTime -> %s" % texts[:2])
+        assert texts[0] == "Cộng hoà xã hội chủ nghĩa Việt Nam" and texts[1] == "Độc lập - Tự do - Hạnh phúc", texts
+        nm = splitter.doc_name(pd.doc, [0], "VB")
+        log("    ten file: " + nm)
+        assert nm == "Bao cao cong tac so hoa nam 2026 ngay 19.10.2026", nm
+        assert legacy.vni("Coäng hoøa xaõ hoäi chuû nghóa Vieät Nam") == "Cộng hòa xã hội chủ nghĩa Việt Nam"
+        # gõ bằng Unikey bảng mã TCVN3 -> tự đổi; font .VnTime khi gõ -> dùng Times New Roman
+        assert legacy.looks_tcvn3("§· kiÓm tra", 1) and legacy.tcvn3("§· kiÓm tra") == "Đã kiểm tra"
+        assert not legacy.looks_tcvn3("Đã kiểm tra") and not legacy.looks_tcvn3("Café ở Paris") and not legacy.looks_tcvn3("a × b ÷ c = 5 µm, ± 2·x")
+        assert fm.resolve(".VnTime")[0] == fm.resolve("Times New Roman")[0]
+
+    step("Font ma cu .VnTime (TCVN3) / VNI -> sua chu, tach van ban dung tieng Viet", legacy_check)
+
     def merge_check():
         # gộp nhiều PDF -> 1 file; file gốc không đổi; không ghi đè file nguồn
         import merger
@@ -320,8 +357,8 @@ def run(out_dir):
             p2.insert_text((297 - f.text_length(t, sz) / 2, y), t, fontname="F0", fontfile=path, fontsize=sz)
         name2 = splitter.doc_name(d2, [0], "VB02")
         log("    ten file: %s | %s" % (name, name2))
-        assert name == "Báo cáo tình hình thực hiện nhiệm vụ quý III ngày 10.10.2026", name
-        assert name2 == "Số hóa hồ sơ ngày 19.10.2026", name2
+        assert name == "Bao cao tinh hinh thuc hien nhiem vu quy III ngay 10.10.2026", name
+        assert name2 == "So hoa ho so ngay 19.10.2026", name2
         # trang trống kiểu scan
         res = []
         for kind in ("so_trang", "lem", "dau_do", "mot_dong"):

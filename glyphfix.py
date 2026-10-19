@@ -146,7 +146,7 @@ class GlyphFixer:
                     chars = s.get("chars")
                     if chars is None:
                         continue
-                    if s.get("alpha", 255) == 0:   # chữ ẩn (OCR) -> không kiểm
+                    if s.get("alpha", 255) == 0 or s.get("legacy"):   # chữ ẩn (OCR) / đã đổi từ mã cũ -> không kiểm
                         s["text"] = "".join(ch["c"] for ch in chars)
                         continue
                     key = (s.get("font", ""), s.get("flags", 0) & 18)
@@ -189,6 +189,11 @@ def page_dict(page, fm=None, flags=None, doc_id=None):
     if flags is None:
         flags = fitz.TEXT_PRESERVE_WHITESPACE | fitz.TEXT_PRESERVE_LIGATURES
     raw = page.get_text("rawdict", flags=flags)
+    try:
+        import legacy
+        legacy.fix_dict(raw)
+    except Exception:
+        pass
     if fm is None:
         fm = _default_fm()
     if fm is None or not fm.families:
