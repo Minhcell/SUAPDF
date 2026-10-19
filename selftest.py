@@ -277,7 +277,8 @@ def run(out_dir):
         dst = out("da_gop.pdf")
         ok, total, err = merger.merge(srcs, dst)
         r = fitz.open(dst)
-        texts = [r[i].get_text().strip() for i in range(r.page_count)]
+        # (font Windows có thể trả dấu cách dạng \xa0 -> chuẩn hoá trước khi so)
+        texts = [" ".join(r[i].get_text().replace("\xa0", " ").split()) for i in range(r.page_count)]
         log("    gop %d file -> %d trang, muc luc %d" % (ok, r.page_count, len(r.get_toc())))
         assert ok == 3 and total == 6 and r.page_count == 6 and not err
         assert texts[0] == "File 1 trang 1" and texts[2] == "File 2 trang 1" and texts[5] == "File 3 trang 3", texts
