@@ -43,6 +43,17 @@ def tessdata_dir():
     return None
 
 
+def ocr_dir():
+    """Thư mục dữ liệu dùng để NHẬN DẠNG: ưu tiên bản 'fast' (nhanh gấp ~3-4 lần, độ chính xác tương đương
+    với văn bản hành chính); không có thì dùng bản 'best'."""
+    d = tessdata_dir()
+    if d:
+        f = os.path.join(d, "fast", "vie.traineddata")
+        if os.path.isfile(f) and os.path.getsize(f) > 300000:
+            return os.path.join(d, "fast")
+    return d
+
+
 def tessdata_report():
     """Mô tả các chỗ đã tìm vie.traineddata (để báo lỗi rõ ràng)."""
     out = []
@@ -312,7 +323,7 @@ def _ocr_words(page_rect, img_gray, dpi=None):
     bio = io.BytesIO()
     Image.fromarray(img_gray).save(bio, "PNG")
     p.insert_image(p.rect, stream=bio.getvalue())
-    tp = p.get_textpage_ocr(language="vie", dpi=dpi or OCR_DPI, full=True, tessdata=tessdata_dir())
+    tp = p.get_textpage_ocr(language="vie", dpi=dpi or OCR_DPI, full=True, tessdata=ocr_dir())
     # Tự tách từ theo khoảng trống THẬT giữa các chữ (thư viện hay bỏ sót dấu cách sau chữ có dấu,
     # vd "Kếhoạch", "Sốlượng")
     raw = p.get_text("rawdict", textpage=tp)
@@ -687,3 +698,63 @@ def row_styles(page, rows, dpi=200):
             size = size0
         out.append((round(size * 2) / 2, bold))
     return out
+
+
+# =============================================================================
+#  NHẬN DẠNG NHIỀU TRANG SONG SONG (tận dụng nhiều nhân CPU -> chuyển file scan dài nhanh hơn nhiều)
+# =============================================================================
+_POOL_DOC = None
+
+
+def _pool_init(data):
+    global _POOL_DOC
+    _POOL_DOC = fitz.open(stream=data, filetype="pdf")
+
+
+def _pool_job(args):
+    pno, keep = args
+    try:
+        return pno, analyze(_POOL_DOC[pno], keep_text=keep)
+    except Exception:
+        return pno, None
+
+
+def analyze_many(doc, jobs, progress=None):
+    """jobs: list (số trang, keep_text). -> {số trang: kết quả analyze}. Chạy song song nếu máy nhiều nhân."""
+    res = {}
+    if not jobs:
+        return res
+    ncpu = os.cpu_count() or 1
+    workers = max(1, min(ncpu - 1, 6, len(jobs)))
+    try:
+        workers = int(os.environ.get("SUAPDF_WORKERS", workers))    # (dùng khi kiểm tra)
+    except ValueError:
+        pass
+    done = 0
+    if workers >= 2 and len(jobs) >= 3:
+        try:
+            import multiprocessing
+            from concurrent.futures import ProcessPoolExecutor, as_completed
+            ctx = multiprocessing.get_context("spawn")
+            with ProcessPoolExecutor(max_workers=workers, mp_context=ctx, initializer=_pool_init,
+                                     initargs=(doc.tobytes(),)) as ex:
+                futs = [ex.submit(_pool_job, j) for j in jobs]
+                for f in as_completed(futs):
+                    pno, r = f.result()
+                    res[pno] = r
+                    done += 1
+                    if progress:
+                        progress(done, len(jobs))
+            return res
+        except Exception:
+            res = {}
+            done = 0
+    for pno, keep in jobs:
+        try:
+            res[pno] = analyze(doc[pno], keep_text=keep)
+        except Exception:
+            res[pno] = None
+        done += 1
+        if progress:
+            progress(done, len(jobs))
+    return res

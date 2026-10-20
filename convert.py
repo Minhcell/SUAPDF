@@ -140,10 +140,31 @@ def _graphics_layer(doc, pno, lines, tables, dpi, keep_inner=False):
     tmp.insert_pdf(doc, from_page=pno, to_page=pno)
     tp = tmp[0]
     derot = tp.derotation_matrix
+    # xoá chữ: nếu MỌI chữ trên trang đều thuộc các dòng đã đọc -> 1 vùng xoá cả trang (nhanh hơn rất nhiều
+    # so với hàng trăm vùng nhỏ); còn chữ khác (chữ dọc, chữ vẽ đặc biệt...) thì xoá từng dòng, giữ phần còn lại
+    n_all = 0
+    try:
+        n_all = sum(len("".join(tp.get_text("text").split())) for _ in (0,))
+    except Exception:
+        pass
+    n_in = 0
+    rects = []
     for ln in lines:
+        rr = None
         for s in ln["raw"]["spans"]:
             if s["text"].strip():
-                tp.add_redact_annot(core.PdfDocument._shrunk(s["bbox"], tp, 0.15), fill=False)
+                r = core.PdfDocument._shrunk(s["bbox"], tp, 0.15)
+                rr = r if rr is None else rr | r
+        if rr is not None:
+            rects.append(rr)
+            n_in += len("".join("".join(s["text"] for s in ln["raw"]["spans"]).split()))
+    if rects and n_all and n_in >= n_all:
+        tp.add_redact_annot(tp.rect, fill=False)
+    else:
+        for ln in lines:
+            for s in ln["raw"]["spans"]:
+                if s["text"].strip():
+                    tp.add_redact_annot(core.PdfDocument._shrunk(s["bbox"], tp, 0.15), fill=False)
     core.apply_text_only_redactions(tp)
     # bỏ khung bảng + nền ô (đã chuyển thành viền / màu ô Excel)
     covered = getattr(fitz, "PDF_REDACT_LINE_ART_REMOVE_IF_COVERED", 1)

@@ -364,6 +364,35 @@ def run(out_dir):
 
     step("Sua truc tiep ban scan / anh JPG-PNG (tu nhan dang chu)", scan_edit_check)
 
+    def parallel_ocr_check():
+        # PDF scan nhiều trang -> Word: nhận dạng song song nhiều nhân CPU (chạy được cả trong file .exe)
+        import ocrpage
+        import wordnative
+        import zipfile
+        import time as _t
+        if not ocrpage.ocr_available():
+            raise RuntimeError("thieu du lieu OCR")
+        d = fitz.open()
+        for k in range(3):
+            pg = d.new_page()
+            for i in range(6):
+                pg.insert_text((60, 100 + i * 20), "Trang %d dòng %d văn bản hành chính" % (k + 1, i + 1),
+                               fontname="F0", fontfile=path, fontsize=13)
+        sc = fitz.open()
+        for pg in d:
+            q = sc.new_page()
+            q.insert_image(q.rect, stream=pg.get_pixmap(dpi=150).tobytes("png"))
+        os.environ.setdefault("SUAPDF_WORKERS", "2")
+        t0 = _t.time()
+        dst = out("scan3trang.docx")
+        wordnative.pdf_to_docx(sc, dst)
+        x = zipfile.ZipFile(dst).read("word/document.xml").decode("utf-8")
+        log("    3 trang scan -> Word: %.1fs, may %s nhan" % (_t.time() - t0, os.cpu_count()))
+        for k in range(3):
+            assert ("Trang %d" % (k + 1)) in x, "thieu chu trang %d" % (k + 1)
+
+    step("PDF scan nhieu trang -> Word (nhan dang song song nhieu nhan)", parallel_ocr_check)
+
     def merge_check():
         # gộp nhiều PDF -> 1 file; file gốc không đổi; không ghi đè file nguồn
         import merger

@@ -64,10 +64,25 @@ class GlyphFixer:
             self._cands[key] = c
         return c
 
+    def _one(self, path, H, base, W, ch):
+        key = (path, H, base, W, ch)
+        c = self._cands.get(key)
+        if c is None:
+            from PIL import Image, ImageDraw
+            im = Image.new("L", (W, H), 0)
+            ImageDraw.Draw(im).text((2, base), ch, font=self._pilfont(path), fill=255, anchor="ls")
+            c = np.asarray(im) > 110
+            self._cands[key] = c
+        return c
+
     # ---------------------------------------------------------------- so hình
     def _verify(self, page, ch, span):
         """Trả về ký tự đúng cho ký tự 'ch' (dựa trên hình của nó trên trang)."""
         c = ch["c"]
+        # chỉ CHỮ CÁI KHÔNG DẤU mới có thể bị sửa (vd 'd' -> 'ả'); chữ có dấu / chữ số luôn giữ nguyên
+        # -> bỏ qua việc so hình cho chúng (nhanh hơn nhiều)
+        if c in _CAND_SET and not (c.isascii() and c.isalpha()):
+            return c
         size = span["size"] or 12
         zoom = PX / size
         bbox = fitz.Rect(ch["bbox"])
@@ -99,9 +114,21 @@ class GlyphFixer:
         path, _ = self.fm.resolve(fam, bold, ital)
         if not path:
             return c
+        osum = o.sum()
+        if c in _CAND_SET:
+            # so nhanh với CHÍNH chữ đọc ra: giống rõ (>= 0.72) thì chắc chắn giữ nguyên, khỏi so 200 mẫu
+            one = self._one(path, H, base, W, c)
+            osm = one.sum()
+            sc1 = 0.0
+            for dy in (-2, -1, 0, 1, 2):
+                for dx in (-3, -2, -1, 0, 1, 2, 3):
+                    sh = np.roll(np.roll(o, dy, axis=0), dx, axis=1)
+                    it = (one & sh).sum()
+                    sc1 = max(sc1, it / max(1, osm + osum - it))
+            if sc1 >= 0.72:
+                return c
         cand = self._candidates(path, H, base, W)
         best = np.zeros(len(CANDIDATES))
-        osum = o.sum()
         csum = cand.sum(axis=(1, 2))
         for dy in (-2, -1, 0, 1, 2):
             for dx in (-3, -2, -1, 0, 1, 2, 3):

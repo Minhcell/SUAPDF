@@ -300,8 +300,27 @@ class PdfDocument:
     MAX_UNDO = 30
 
     def __init__(self, path, password=None):
+        if isinstance(path, (list, tuple)):
+            # mở NHIỀU file cùng lúc: ghép thành 1 tài liệu theo đúng thứ tự đã chọn (file gốc không đổi)
+            paths = list(path)
+            if len(paths) == 1:
+                path = paths[0]
+            else:
+                out = fitz.open()
+                for p in paths:
+                    out.insert_pdf(fitz.open(stream=open_as_pdf_bytes(p), filetype="pdf"))
+                base = os.path.splitext(os.path.basename(paths[0]))[0]
+                self.path = os.path.join(os.path.dirname(paths[0]), base + "_gop_%d_file.pdf" % len(paths))
+                self.sources = paths
+                self.doc = fitz.open(stream=out.tobytes(garbage=3, deflate=True), filetype="pdf")
+                self._init_state()
+                return
         self.path = path
+        self.sources = [path]
         self.doc = fitz.open(stream=open_as_pdf_bytes(path), filetype="pdf")
+        self._init_state()
+
+    def _init_state(self):
         self.undo_stack, self.redo_stack = [], []
         self.modified = False
         self._lines = {}

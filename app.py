@@ -16,7 +16,7 @@ from PyQt5.QtWidgets import (
     QToolBar, QAction, QActionGroup, QComboBox, QLabel, QSpinBox, QToolButton,
     QColorDialog, QListWidget, QListWidgetItem, QDockWidget, QDialog, QVBoxLayout,
     QHBoxLayout, QRadioButton, QButtonGroup, QDialogButtonBox, QCheckBox, QProgressDialog,
-    QInputDialog, QMenu, QFrame, QWidget, QCompleter, QStyle, QScrollArea, QGridLayout)
+    QInputDialog, QMenu, QFrame, QWidget, QCompleter, QStyle, QScrollArea, QGridLayout, QGraphicsItem, QGraphicsLineItem, QShortcut)
 
 # bản exe không có cửa sổ console: tránh lỗi khi thư viện ghi log ra stdout
 if sys.stdout is None:
@@ -140,6 +140,142 @@ class PageView(QGraphicsView):
         self.opened_style = None
         self.cover = None
         self.limit_line = None
+        # hiển thị LIÊN TỤC mọi trang (cuộn đọc cả văn bản)
+        self.conts = []        # khung (container) của từng trang; toạ độ con = toạ độ trang
+        self.pix = {}          # số trang -> (QGraphicsPixmapItem, độ nét đã vẽ)
+        self.layout_key = None
+        self.band_page = None
+        self._vis_timer = QTimer(self, singleShot=True, interval=40, timeout=self.render_visible)
+        self.verticalScrollBar().valueChanged.connect(self._scrolled)
+
+    # ---- hiển thị liên tục nhiều trang
+    GAP = 14
+
+    def build_layout(self, pdf):
+        """Xếp mọi trang thành 1 cột dọc để cuộn đọc liên tục."""
+        self.close_editor(commit=False)
+        sc = self.scene()
+        sc.clear()
+        self.hover = self.band = None
+        self.conts, self.pix = [], {}
+        y, wmax = 0.0, 0.0
+        for i in range(pdf.page_count()):
+            r = pdf.doc[i].rect
+            c = QGraphicsRectItem(0, 0, r.width, r.height)
+            c.setPen(QPen(Qt.NoPen))
+            c.setBrush(QBrush(QColor("white")))
+            c.setPos(0, y)
+            sh = QGraphicsRectItem(2, 2, r.width, r.height, c)       # bóng mờ
+            sh.setPen(QPen(Qt.NoPen))
+            sh.setBrush(QBrush(QColor(0, 0, 0, 70)))
+            sh.setFlag(QGraphicsItem.ItemStacksBehindParent, True)
+            sc.addItem(c)
+            self.conts.append(c)
+            y += r.height + self.GAP
+            wmax = max(wmax, r.width)
+        sc.setSceneRect(QRectF(-20, -20, wmax + 40, max(y, 1) + 40))
+        self.page_item = self.conts[0] if self.conts else None
+        self.layout_key = (id(pdf), tuple((round(pdf.doc[i].rect.width, 1), round(pdf.doc[i].rect.height, 1))
+                                          for i in range(pdf.page_count())))
+
+    def ensure_layout(self, pdf):
+        key = (id(pdf), tuple((round(pdf.doc[i].rect.width, 1), round(pdf.doc[i].rect.height, 1))
+                              for i in range(pdf.page_count())))
+        if key != self.layout_key:
+            self.build_layout(pdf)
+            return True
+        return False
+
+    def page_offset(self, i):
+        return self.conts[i].pos() if 0 <= i < len(self.conts) else QPointF(0, 0)
+
+    def page_at(self, sp):
+        """Điểm trong cảnh -> (số trang, điểm theo toạ độ trang) hoặc (None, None)."""
+        for i, c in enumerate(self.conts):
+            r = c.rect()
+            o = c.pos()
+            if o.y() - self.GAP / 2 <= sp.y() <= o.y() + r.height() + self.GAP / 2:
+                return i, QPointF(sp.x() - o.x(), sp.y() - o.y())
+        return None, None
+
+    def cont(self, i=None):
+        i = self.win.cur if i is None else i
+        return self.conts[i] if 0 <= i < len(self.conts) else None
+
+    def invalidate(self, pages=None):
+        for i in (list(self.pix) if pages is None else pages):
+            it = self.pix.pop(i, None)
+            if it is not None:
+                try:
+                    self.scene().removeItem(it[0])
+                except Exception:
+                    pass
+        self._vis_timer.start()
+
+    def visible_pages(self, margin=0.6):
+        vr = self.mapToScene(self.viewport().rect()).boundingRect()
+        h = vr.height()
+        vr = vr.adjusted(0, -h * margin, 0, h * margin)
+        out = []
+        for i, c in enumerate(self.conts):
+            o, r = c.pos(), c.rect()
+            if o.y() + r.height() >= vr.top() and o.y() <= vr.bottom():
+                out.append(i)
+        return out
+
+    def render_visible(self):
+        w = self.win
+        if not w.pdf or not self.conts:
+            return
+        dpr = w.devicePixelRatioF() if hasattr(w, "devicePixelRatioF") else 1.0
+        scale_px = max(0.5, min(w.zoom * dpr, 6))
+        vis = self.visible_pages()
+        for i in vis:
+            have = self.pix.get(i)
+            if have is not None and abs(have[1] - scale_px) < 1e-3:
+                continue
+            pm = w.pdf.render(i, scale_px)
+            item = QGraphicsPixmapItem(QPixmap.fromImage(pix_to_qimage(pm)), self.conts[i])
+            item.setTransformationMode(Qt.SmoothTransformation)
+            item.setScale(1.0 / scale_px)
+            item.setZValue(0)
+            if have is not None:
+                try:
+                    self.scene().removeItem(have[0])
+                except Exception:
+                    pass
+            self.pix[i] = (item, scale_px)
+        # giải phóng ảnh các trang ở xa (đỡ tốn bộ nhớ với file nhiều trang)
+        keep = set(range(min(vis or [0]) - 3, max(vis or [0]) + 4))
+        for i in [k for k in self.pix if k not in keep]:
+            it = self.pix.pop(i)
+            try:
+                self.scene().removeItem(it[0])
+            except Exception:
+                pass
+
+    def _scrolled(self, *_):
+        self._vis_timer.start()
+        w = self.win
+        if not w.pdf or not self.conts or self.editor is not None or self.band is not None:
+            return
+        # trang đang đọc = trang chiếm giữa màn hình
+        c = self.mapToScene(self.viewport().rect().center())
+        i, _p = self.page_at(c)
+        if i is None:
+            i = len(self.conts) - 1 if c.y() > 0 else 0
+        if i != w.cur:
+            w.set_cur_silent(i)
+
+    def scroll_to_page(self, i):
+        if not (0 <= i < len(self.conts)):
+            return
+        o = self.conts[i].pos()
+        sb = self.verticalScrollBar()
+        sb.blockSignals(True)
+        sb.setValue(sb.value() + self.mapFromScene(QPointF(0, o.y())).y() - 8)
+        sb.blockSignals(False)
+        self._vis_timer.start()
 
     # ---- hiển thị
     def show_page(self, pixmap, page_rect, scale_px):
@@ -164,16 +300,7 @@ class PageView(QGraphicsView):
         if e.modifiers() & Qt.ControlModifier:
             self.win.zoom_step(1 if e.angleDelta().y() > 0 else -1)
             return
-        sb = self.verticalScrollBar()
-        before = sb.value()
-        super().wheelEvent(e)
-        if self.editor is None and sb.value() == before:
-            if e.angleDelta().y() < 0 and before >= sb.maximum():
-                if self.win.go_page(self.win.cur + 1):
-                    self.verticalScrollBar().setValue(0)
-            elif e.angleDelta().y() > 0 and before <= sb.minimum():
-                if self.win.go_page(self.win.cur - 1):
-                    self.verticalScrollBar().setValue(self.verticalScrollBar().maximum())
+        super().wheelEvent(e)      # cuộn liên tục qua mọi trang
 
     def _line_at(self, x, y):
         pdf, pno = self.win.pdf, self.win.cur
@@ -190,16 +317,29 @@ class PageView(QGraphicsView):
             self.win.status("")
 
     def mouseMoveEvent(self, e):
-        p = self.mapToScene(e.pos())
+        sp = self.mapToScene(e.pos())
         if self.band_start is not None and self.band is not None:
+            p = sp - self.page_offset(self.band_page)
             self.band.setRect(QRectF(self.band_start, p).normalized())
             return
-        if self.win.mode == MODE_EDIT and self.win.pdf and self.editor is None:
+        pi, p = self.page_at(sp)
+        if pi is not None and self.editor is None and pi != self.win.cur and self.win.pdf:
+            self.win.set_cur_silent(pi)
+        if p is None:
+            p = sp
+        if self.win.mode == MODE_EDIT and self.win.pdf and self.editor is None and pi is not None:
             ln = self._line_at(p.x(), p.y())
             if ln:
                 r = QRectF(ln.bbox.x0 - 1, ln.bbox.y0 - 1, ln.bbox.width + 2, ln.bbox.height + 2)
-                if self.hover is None:
-                    self.hover = self.scene().addRect(r, QPen(QColor("#1e6fd9"), 0), QBrush(QColor(30, 111, 217, 35)))
+                if self.hover is None or self.hover.parentItem() is not self.cont():
+                    if self.hover is not None:
+                        try:
+                            self.scene().removeItem(self.hover)
+                        except Exception:
+                            pass
+                    self.hover = QGraphicsRectItem(r, self.cont())
+                    self.hover.setPen(QPen(QColor("#1e6fd9"), 0))
+                    self.hover.setBrush(QBrush(QColor(30, 111, 217, 35)))
                     self.hover.setZValue(5)
                 else:
                     self.hover.setRect(r)
@@ -225,7 +365,11 @@ class PageView(QGraphicsView):
             return
         if not self.win.pdf or e.button() != Qt.LeftButton:
             return super().mousePressEvent(e)
-        p = self.mapToScene(e.pos())
+        pi, p = self.page_at(self.mapToScene(e.pos()))
+        if pi is None:
+            return
+        if pi != self.win.cur:
+            self.win.set_cur_silent(pi)
         pr = self.win.page_rect()
         if not (0 <= p.x() <= pr.width and 0 <= p.y() <= pr.height):
             return
@@ -242,8 +386,10 @@ class PageView(QGraphicsView):
             self.open_editor_add(p.x(), p.y() - self.win.cur_size() * 0.5)
         elif self.win.mode == MODE_ERASE:
             self.band_start = p
-            self.band = self.scene().addRect(QRectF(p, p), QPen(QColor("#d93025"), 0, Qt.DashLine),
-                                             QBrush(QColor(217, 48, 37, 40)))
+            self.band_page = pi
+            self.band = QGraphicsRectItem(QRectF(p, p), self.cont(pi))
+            self.band.setPen(QPen(QColor("#d93025"), 0, Qt.DashLine))
+            self.band.setBrush(QBrush(QColor(217, 48, 37, 40)))
             self.band.setZValue(6)
 
     def mouseReleaseEvent(self, e):
@@ -268,6 +414,8 @@ class PageView(QGraphicsView):
         ed.commit.connect(lambda: self.close_editor(True))
         ed.cancel.connect(lambda: self.close_editor(False))
         self.proxy = self.scene().addWidget(ed)
+        if self.cont() is not None:
+            self.proxy.setParentItem(self.cont())     # toạ độ theo trang đang sửa
         self.proxy.setScale(1.0 / SUPER)
         self.proxy.setZValue(10)
         pad = 2 * SUPER / SUPER
@@ -313,11 +461,13 @@ class PageView(QGraphicsView):
                 r = r.united(QRectF(l.bbox.x0, l.bbox.y0, l.bbox.width, l.bbox.height))
             # vạch giới hạn dưới: chữ vượt quá sẽ tự thu nhỏ để không đè dòng / đường kẻ bên dưới
             lim = para["limit"]
-            self.limit_line = self.scene().addLine(para["x0"], lim, para["x1"], lim,
-                                                   QPen(QColor(217, 48, 37, 160), 0, Qt.DashLine))
+            self.limit_line = QGraphicsLineItem(para["x0"], lim, para["x1"], lim, self.cont())
+            self.limit_line.setPen(QPen(QColor(217, 48, 37, 160), 0, Qt.DashLine))
             self.limit_line.setZValue(9)
         # che chữ cũ trong lúc sửa
-        self.cover = self.scene().addRect(r, QPen(Qt.NoPen), QBrush(QColor(255, 255, 255)))
+        self.cover = QGraphicsRectItem(r, self.cont())
+        self.cover.setPen(QPen(Qt.NoPen))
+        self.cover.setBrush(QBrush(QColor(255, 255, 255)))
         self.cover.setZValue(4)
         n = len(para["lines"]) if para else 1
         w.status(("[Bản scan: vùng chữ cũ sẽ được phủ trắng] " if ln.invisible else "") +
@@ -824,6 +974,7 @@ class AnalyzeWorker(QThread):
 class SplitDialog(QDialog):
     C_START = QColor("#d7f2d7")
     C_BLANK = QColor("#e4e4e4")
+    C_DEL = QColor("#f6d3d0")
 
     def __init__(self, win):
         super().__init__(win)
@@ -835,6 +986,7 @@ class SplitDialog(QDialog):
         self.doc = None
         self.infos = None
         self.starts, self.blanks = set(), set()
+        self.deleted = set()      # trang người dùng chọn XOÁ (không đưa vào file tách)
         self.files = []
         self.setWindowTitle("Tách file PDF gộp thành từng văn bản")
         self.setAcceptDrops(True)
@@ -867,7 +1019,8 @@ class SplitDialog(QDialog):
         outer.addLayout(r2)
 
         hint = QLabel("Bấm vào 1 trang để <b>đặt / bỏ</b> chỗ bắt đầu văn bản mới (ô xanh). "
-                      "Chuột phải: đánh dấu trang trống / giữ trang.")
+                      "Chuột phải: đánh dấu trang trống / giữ trang. "
+                      "<b>Xoá trang</b>: chọn trang (Ctrl/Shift + bấm để chọn nhiều) → chuột phải → Xoá trang đã chọn.")
         hint.setWordWrap(True)
         hint.setStyleSheet("color:#555")
         outer.addWidget(hint)
@@ -881,7 +1034,9 @@ class SplitDialog(QDialog):
         self.pages.setWordWrap(True)
         self.pages.setSpacing(4)
         self.pages.setMinimumHeight(180)
+        self.pages.setSelectionMode(QListWidget.ExtendedSelection)   # Ctrl / Shift + bấm: chọn nhiều trang
         self.pages.itemClicked.connect(self.toggle_start)
+        QShortcut(QKeySequence(Qt.Key_Delete), self.pages, activated=self.delete_selected)
         self.pages.setContextMenuPolicy(Qt.CustomContextMenu)
         self.pages.customContextMenuRequested.connect(self.page_menu)
         outer.addWidget(self.pages, 1)
@@ -960,6 +1115,7 @@ class SplitDialog(QDialog):
 
     def load(self, path, data):
         self.src_path, self.data = path, data
+        self.deleted = set()
         self.doc = fitz.open(stream=data, filetype="pdf")
         if self.doc.needs_pass:
             QMessageBox.warning(self, APP_TITLE, "File có mật khẩu – hãy mở bằng phần mềm trước.")
@@ -1027,7 +1183,11 @@ class SplitDialog(QDialog):
     def toggle_start(self, it):
         if self.infos is None:
             return
+        if QApplication.keyboardModifiers() & (Qt.ControlModifier | Qt.ShiftModifier):
+            return      # đang chọn nhiều trang (để xoá) -> không đổi chỗ bắt đầu
         i = self.pages.row(it)
+        if i in self.deleted:
+            return
         if i in self.blanks:
             self.blanks.discard(i)  # bấm vào trang trống -> giữ lại trang đó
         elif i in self.starts:
@@ -1043,13 +1203,26 @@ class SplitDialog(QDialog):
         if it is None or self.infos is None:
             return
         i = self.pages.row(it)
+        if not it.isSelected():
+            self.pages.clearSelection()
+            it.setSelected(True)
+        sel = sorted(self.pages.row(x) for x in self.pages.selectedItems())
         m = QMenu(self)
+        a_del = m.addAction("🗑 Xoá %d trang đã chọn (không đưa vào file tách)" % len(sel))
+        a_undel = m.addAction("↺ Khôi phục trang đã xoá")
+        a_undel.setEnabled(any(p in self.deleted for p in sel))
+        m.addSeparator()
         a1 = m.addAction("▶ Bắt đầu văn bản mới từ trang này")
         a2 = m.addAction("Bỏ đánh dấu bắt đầu")
         m.addSeparator()
         a3 = m.addAction("Đánh dấu TRANG TRỐNG (bỏ đi)")
         a4 = m.addAction("Giữ trang này (không phải trang trống)")
         a = m.exec_(self.pages.viewport().mapToGlobal(pos))
+        if a is a_del:
+            return self.delete_selected()
+        if a is a_undel:
+            self.deleted.difference_update(sel)
+            return self.refresh()
         if a is a1:
             self.starts.add(i); self.blanks.discard(i)
         elif a is a2:
@@ -1060,11 +1233,32 @@ class SplitDialog(QDialog):
             self.blanks.discard(i)
         self.refresh()
 
+    def delete_selected(self):
+        if self.infos is None:
+            return
+        sel = [self.pages.row(x) for x in self.pages.selectedItems()]
+        if not sel:
+            return
+        self.deleted.update(sel)
+        self.refresh()
+
     def groups(self):
         if self.infos is None:
             return []
-        return self.sp.plan(self.infos, self.mode.currentData(), self.every.value(),
-                            self.drop_blank.isChecked(), starts=self.starts, blanks=self.blanks)
+        dl = getattr(self, "deleted", set())
+        starts = set(self.starts)
+        # trang bắt đầu văn bản bị xoá -> văn bản đó bắt đầu từ trang kế tiếp còn lại
+        for p in sorted(starts & dl):
+            starts.discard(p)
+            q = p + 1
+            while q < len(self.infos) and (q in dl or q in self.blanks):
+                q += 1
+            if q < len(self.infos) and not any(s for s in starts if p < s <= q):
+                starts.add(q)
+        docs = self.sp.plan(self.infos, self.mode.currentData(), self.every.value(),
+                            self.drop_blank.isChecked(), starts=starts, blanks=self.blanks | dl)
+        docs = [[p for p in g if p not in dl] for g in docs]
+        return [g for g in docs if g]
 
     def refresh(self, *_):
         docs = self.groups()
@@ -1078,7 +1272,10 @@ class SplitDialog(QDialog):
             if self.infos is None:
                 it.setText(txt)
                 continue
-            if i in self.blanks:
+            if i in self.deleted:
+                txt += "\n🗑 ĐÃ XOÁ"
+                it.setBackground(QBrush(self.C_DEL))
+            elif i in self.blanks:
                 txt += "\n(trống – bỏ)" if self.drop_blank.isChecked() else "\n(trống)"
                 it.setBackground(QBrush(self.C_BLANK))
             elif i in vb_of and docs[vb_of[i]][0] == i:
@@ -1099,8 +1296,10 @@ class SplitDialog(QDialog):
         parts = []
         for k, g in enumerate(docs):
             parts.append("<b>VB%d</b>: %s (%d trang)" % (k + 1, self._ranges(g), len(g)))
-        self.summary.setText("Sẽ tách thành <b>%d văn bản</b>%s:&nbsp; %s" % (
-            len(docs), (", bỏ %d trang trống" % nb) if nb else "", " · ".join(parts)))
+        nd = len(self.deleted)
+        self.summary.setText("Sẽ tách thành <b>%d văn bản</b>%s%s:&nbsp; %s" % (
+            len(docs), (", bỏ %d trang trống" % nb) if nb else "", (", xoá %d trang" % nd) if nd else "",
+            " · ".join(parts)))
 
     @staticmethod
     def _ranges(pages):
@@ -1157,8 +1356,10 @@ class SplitDialog(QDialog):
         lst = "<br>".join("• %s – %d trang" % (os.path.basename(p), len(g)) for p, g in files[:15])
         if len(files) > 15:
             lst += "<br>• ... và %d file nữa" % (len(files) - 15)
-        msg = ("Đã tách thành công <b>%d văn bản</b> (tổng %d trang)%s.<br>Lưu tại: %s<br><br>%s"
-               % (len(files), npages, (", đã bỏ <b>%d</b> trang trống" % nb) if nb else "", out_dir, lst))
+        nd = len(self.deleted)
+        msg = ("Đã tách thành công <b>%d văn bản</b> (tổng %d trang)%s%s.<br>Lưu tại: %s<br><br>%s"
+               % (len(files), npages, (", đã bỏ <b>%d</b> trang trống" % nb) if nb else "",
+                  (", đã xoá <b>%d</b> trang theo yêu cầu" % nd) if nd else "", out_dir, lst))
         box = QMessageBox(QMessageBox.Information, "Kết quả tách văn bản", msg, QMessageBox.Ok, self)
         box.setTextFormat(Qt.RichText)
         box.exec_()
@@ -1176,6 +1377,23 @@ class SplitDialog(QDialog):
                 subprocess.Popen(["xdg-open", os.path.dirname(p)])
         except Exception:
             pass
+
+
+def pick_files_ordered(parent, title, folder, filt):
+    """Chọn 1 hay NHIỀU file (Ctrl + bấm). Trả về danh sách THEO ĐÚNG THỨ TỰ ĐÃ BẤM CHỌN
+    (file chọn trước đứng trước) – hộp thoại của Windows không giữ thứ tự này nên dùng hộp thoại riêng."""
+    dlg = QFileDialog(parent, title, folder, filt)
+    dlg.setOption(QFileDialog.DontUseNativeDialog, True)
+    dlg.setFileMode(QFileDialog.ExistingFiles)
+    dlg.setLabelText(QFileDialog.Accept, "Mở")
+    dlg.setLabelText(QFileDialog.Reject, "Huỷ")
+    dlg.setLabelText(QFileDialog.FileName, "Tên file:")
+    dlg.setLabelText(QFileDialog.FileType, "Loại file:")
+    dlg.setLabelText(QFileDialog.LookIn, "Thư mục:")
+    dlg.resize(820, 520)
+    if dlg.exec_() != QDialog.Accepted:
+        return []
+    return [os.path.normpath(p) for p in dlg.selectedFiles()]
 
 
 class MergeDialog(QDialog):
@@ -1253,7 +1471,9 @@ class MergeDialog(QDialog):
         self.files.addItem(it)
 
     def add_files(self):
-        ps, _ = QFileDialog.getOpenFileNames(self, "Chọn các file PDF cần gộp", self.win.last_dir, "PDF (*.pdf)")
+        # chọn nhiều file cùng lúc (Ctrl + bấm): file chọn trước đứng trước
+        ps = pick_files_ordered(self, "Chọn các file PDF cần gộp (Ctrl + bấm để chọn nhiều, chọn trước đứng trước)",
+                                self.win.last_dir, "PDF (*.pdf)")
         for p in ps:
             self._add(p)
         if ps:
@@ -1626,24 +1846,23 @@ class MainWindow(QMainWindow):
             e.acceptProposedAction()
 
     def dropEvent(self, e):
-        for u in e.mimeData().urls():
-            p = u.toLocalFile()
-            if p.lower().endswith((".pdf",) + core.IMAGE_EXT + core.OFFICE_EXT):
-                if self.confirm_discard():
-                    self.open_file(p)
-                break
+        ps = [u.toLocalFile() for u in e.mimeData().urls()]
+        ps = [p for p in ps if p.lower().endswith((".pdf",) + core.IMAGE_EXT + core.OFFICE_EXT)]
+        if ps and self.confirm_discard():
+            self.open_file(ps if len(ps) > 1 else ps[0])
 
     def open_dialog(self):
         if not self.confirm_discard():
             return
-        p, _ = QFileDialog.getOpenFileName(
-            self, "Mở file để sửa", self.last_dir,
+        # mở 1 hay NHIỀU file cùng lúc (Ctrl + bấm); nhiều file -> ghép thành 1 theo thứ tự đã chọn
+        ps = pick_files_ordered(
+            self, "Mở file để sửa (Ctrl + bấm để mở nhiều file cùng lúc – chọn trước đứng trước)", self.last_dir,
             "File hỗ trợ (*.pdf *.jpg *.jpeg *.png *.tif *.tiff *.bmp *.gif *.webp *.jfif "
             "*.doc *.docx *.rtf *.odt *.xls *.xlsx *.ods);;PDF (*.pdf);;"
             "Ảnh scan (*.jpg *.jpeg *.png *.tif *.tiff *.bmp *.gif *.webp *.jfif);;"
             "Word / Excel (*.doc *.docx *.rtf *.odt *.xls *.xlsx *.ods);;Tất cả (*.*)")
-        if p:
-            self.open_file(p)
+        if ps:
+            self.open_file(ps if len(ps) > 1 else ps[0])
 
     def open_file(self, path):
         try:
@@ -1662,6 +1881,8 @@ class MainWindow(QMainWindow):
             return
         self.view.close_editor(False)
         self.pdf = pdf
+        if isinstance(path, (list, tuple)):
+            path = pdf.path
         self.last_dir = os.path.dirname(path)
         self.cur = 0
         self.page_spin.blockSignals(True)
@@ -1676,6 +1897,11 @@ class MainWindow(QMainWindow):
         self.update_actions()
         no_text = all(not pdf.doc[i].get_text("words") for i in range(min(3, pdf.page_count())))
         msg = "Đã mở: %s – bấm vào dòng chữ để sửa." % os.path.basename(path)
+        srcs = getattr(pdf, "sources", [])
+        if len(srcs) > 1:
+            msg = ("Đã mở %d file, ghép liền theo thứ tự đã chọn (%s) – cuộn để đọc, bấm vào chữ để sửa; "
+                   "Lưu để ra 1 file gộp." % (len(srcs), ", ".join(os.path.basename(x) for x in srcs[:4])
+                                               + (", ..." if len(srcs) > 4 else "")))
         if no_text:
             # bản SCAN (ảnh): vẫn sửa trực tiếp – bấm vào dòng chữ, phần mềm tự nhận dạng chữ trên ảnh
             msg = ("Bản SCAN (ảnh): bấm vào dòng chữ để sửa trực tiếp – phần mềm tự nhận dạng chữ tiếng Việt "
@@ -1801,19 +2027,37 @@ class MainWindow(QMainWindow):
         return self.pdf.doc[self.cur].rect
 
     def render_page(self):
+        """Vẽ lại: mọi trang xếp liên tục (cuộn đọc cả văn bản); chỉ trang đang thấy mới được vẽ."""
         if not self.pdf:
             return
-        dpr = self.devicePixelRatioF() if hasattr(self, "devicePixelRatioF") else 1.0
-        scale_px = max(0.5, min(self.zoom * dpr, 6))
-        pm = self.pdf.render(self.cur, scale_px)
-        self.view.show_page(QPixmap.fromImage(pix_to_qimage(pm)), self.page_rect(), scale_px)
-        self.view.set_zoom(self.zoom)
+        v = self.view
+        v.close_editor(commit=False) if v.editor is not None else None
+        sb = v.verticalScrollBar()
+        keep = sb.value()
+        new = v.ensure_layout(self.pdf)
+        v.set_zoom(self.zoom)
+        if new:
+            v.scroll_to_page(self.cur)
+        else:
+            sb.setValue(keep)
+        v.invalidate()
+        v.render_visible()
         self.page_lbl.setText("Trang %d/%d  |  %d%%" % (self.cur + 1, self.pdf.page_count(), round(self.zoom / (96 / 72) * 100)))
 
     def go_page(self, i):
-        if not self.pdf or not (0 <= i < self.pdf.page_count()) or i == self.cur and self.view.page_item:
+        if not self.pdf or not (0 <= i < self.pdf.page_count()):
             return False
         self.view.close_editor(True)
+        self.set_cur_silent(i)
+        if not self.view.conts:
+            self.render_page()
+        self.view.scroll_to_page(i)       # cuộn tới trang đó (các trang vẫn liền nhau)
+        return True
+
+    def set_cur_silent(self, i):
+        """Đổi trang hiện hành (đang đọc / đang sửa) mà không vẽ lại."""
+        if not self.pdf or not (0 <= i < self.pdf.page_count()):
+            return
         self.cur = i
         self.page_spin.blockSignals(True)
         self.page_spin.setValue(i + 1)
@@ -1821,8 +2065,9 @@ class MainWindow(QMainWindow):
         self.thumbs.blockSignals(True)
         self.thumbs.setCurrentRow(i)
         self.thumbs.blockSignals(False)
-        self.render_page()
-        return True
+        if self.view.hover is not None:
+            self.view.hover.hide()
+        self.page_lbl.setText("Trang %d/%d  |  %d%%" % (i + 1, self.pdf.page_count(), round(self.zoom / (96 / 72) * 100)))
 
     def fit_width(self, render=True):
         if not self.pdf:
@@ -2073,4 +2318,6 @@ def main():
 
 
 if __name__ == "__main__":
+    import multiprocessing
+    multiprocessing.freeze_support()     # bắt buộc cho file .exe khi nhận dạng chữ song song nhiều nhân
     sys.exit(main())

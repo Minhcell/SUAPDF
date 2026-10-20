@@ -642,22 +642,31 @@ def pdf_to_docx(doc, out, dpi=200, progress=None, ocr=True):
     _CTX["img"] = lambda png: d.part.get_or_add_image(io.BytesIO(png))[0]
     _CTX["pid"] = pid
     n = doc.page_count
+    # ---- trang SCAN (ảnh) / lớp chữ hỏng: nhận dạng chữ tiếng Việt offline cho MỌI trang trước,
+    #      chạy song song nhiều nhân CPU (file scan vài chục trang nhanh hơn nhiều)
+    scans = {}
+    if ocr:
+        try:
+            import ocrpage
+            if ocrpage.ocr_available():
+                jobs = []
+                for pno in range(n):
+                    pg = doc[pno]
+                    if ocrpage.is_scanned(pg):
+                        jobs.append((pno, False))
+                    elif ocrpage.page_text_broken(pg):
+                        # chữ hiện bình thường nhưng lớp chữ hỏng -> nhận dạng lại từ hình chữ
+                        jobs.append((pno, True))
+                if jobs:
+                    scans = ocrpage.analyze_many(
+                        doc, jobs, (lambda a, b: progress(min(n - 1, int(a * n * 0.85 / b)), n)) if progress else None)
+        except Exception:
+            scans = {}
     for pno in range(n):
         page = doc[pno]
         W, H = page.rect.width, page.rect.height
         rot = page.rotation_matrix
-        # ---- trang SCAN (ảnh): nhận dạng chữ tiếng Việt offline -> văn bản Word gõ được
-        scan = None
-        if ocr:
-            try:
-                import ocrpage
-                if ocrpage.ocr_available() and ocrpage.is_scanned(page):
-                    scan = ocrpage.analyze(page)
-                elif ocrpage.ocr_available() and ocrpage.page_text_broken(page):
-                    # chữ hiện bình thường nhưng lớp chữ hỏng -> nhận dạng lại từ hình chữ
-                    scan = ocrpage.analyze(page, keep_text=True)
-            except Exception:
-                scan = None
+        scan = scans.get(pno)
         if scan is not None:
             rot = fitz.Identity          # toạ độ OCR đã là toạ độ hiển thị
             raw_lines = scan["lines"]

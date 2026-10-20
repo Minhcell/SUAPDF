@@ -5,6 +5,12 @@
 Phần mềm chạy hoàn toàn **offline** trên Windows 10/11 (64-bit), chỉ 1 file `SuaPDF.exe`, không cần cài đặt.
 Lần chạy đầu phần mềm đọc danh sách font của máy (vài giây), các lần sau mở nhanh.
 
+## Mở file và đọc
+- **Mở** (Ctrl+O) hoặc kéo thả: PDF, ảnh scan (JPG/PNG/TIF...), Word/Excel. Chọn **nhiều file cùng lúc** (Ctrl + bấm)
+  → các file được ghép liền thành 1 theo **đúng thứ tự đã bấm chọn**; Lưu sẽ ra 1 file gộp. File gốc không đổi.
+- Khung đọc hiện **tất cả các trang liền nhau** – cuộn chuột để đọc hết văn bản; bấm trang bên trái để nhảy nhanh.
+  Sửa / thêm / tẩy chữ ngay trên trang đang thấy.
+
 ## Sửa văn bản
 | Chế độ | Phím | Cách dùng |
 |---|---|---|
@@ -70,6 +76,10 @@ Bấm nút **Chuyển đổi** → chọn kiểu → thêm file (chọn nhiều 
   giống cách soạn công văn trong Word; chữ ký, con dấu nằm dưới chữ nên bấm vào chữ để sửa không bị vướng ảnh.
 - Sau khi chuyển sang PDF có nút **"Mở PDF vừa tạo để sửa"**.
 
+## Tốc độ chuyển PDF → Word
+File nhiều trang chuyển nhanh hơn trước khoảng 2–3 lần; bản scan dùng bộ nhận dạng chữ nhanh và **chạy song song
+trên nhiều nhân CPU** (máy 4 nhân: file scan 50 trang nhanh hơn ~8–10 lần so với bản cũ).
+
 ## PDF scan có sẵn lớp chữ do máy scan nhận dạng
 Máy scan thường tự nhận dạng chữ nhưng hay sai (vd "ceNG HoA xA ngI cHU xcnia" thay cho "CỘNG HÒA XÃ HỘI CHỦ NGHĨA").
 Phần mềm bỏ lớp chữ đó, **tự nhận dạng lại chữ trên ảnh** (tiếng Việt, offline): bấm sửa hiện đúng chữ, sửa xong
@@ -89,7 +99,7 @@ Gõ bằng Unikey để bảng mã TCVN3 hoặc "Unicode tổ hợp" cũng tự 
 (Nên để Unikey bảng mã **Unicode** khi dùng phần mềm này.)
 
 ## Gộp PDF (Ctrl+G) – gộp nhiều file PDF thành 1 file
-Bấm **Gộp PDF** → **Thêm file...** (hoặc kéo thả nhiều file vào) → sắp thứ tự bằng **▲ Lên / ▼ Xuống**,
+Bấm **Gộp PDF** → **Thêm file...** (chọn nhiều file bằng Ctrl + bấm – **file chọn trước nằm trước**; hoặc kéo thả) → sắp thứ tự bằng **▲ Lên / ▼ Xuống**,
 kéo thả trong danh sách hoặc **Sắp xếp theo tên** → **Gộp & lưu...** → chọn tên file kết quả.
 - Các file gốc chỉ được đọc, **không bị thay đổi**; không cho lưu đè lên file gốc; trùng tên tự thêm (1), (2)...
 - Trang được chép nguyên (chữ, bảng, chữ ký, con dấu, ảnh scan không bị nén lại).
@@ -105,6 +115,8 @@ Bấm **Tách văn bản** → chọn file PDF gộp (hoặc dùng file đang m�
 - Trang có **số trang ở giữa phía trên** (trang 2, 3...) luôn được coi là trang tiếp theo – không bị tách nhầm;
   Quốc hiệu phải đi cặp với tên cơ quan bên trái (hoặc căn giữa trang như đơn từ). Rê chuột lên trang để xem lý do.
 - Máy nhận sai? **Bấm vào trang** để đặt / bỏ chỗ bắt đầu văn bản; **chuột phải** để đánh dấu trang trống / giữ trang.
+- **Xoá trang**: chọn trang (Ctrl/Shift + bấm để chọn nhiều) → **chuột phải → Xoá trang đã chọn** (hoặc phím Delete):
+  trang đó không được đưa vào file tách (ô đỏ "ĐÃ XOÁ"); chuột phải → *Khôi phục* nếu xoá nhầm.
 - Cách khác: *Theo trang trống* (trang trắng ngăn cách văn bản) hoặc *Cố định N trang mỗi văn bản*.
 - **✂ Tách & lưu** → mỗi văn bản 1 file, **tự đặt tên theo trích yếu hoặc tiêu đề, không dấu, chữ thường**:
   - Có trích yếu "V/v ..." (hoặc "Về việc ...") → lấy trích yếu, vd `V/v số hóa hồ sơ` → **`so hoa ho so.pdf`**
