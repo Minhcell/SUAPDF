@@ -390,6 +390,31 @@ def _page_rows(page, ocr=True):
             words = [w for w in page.get_text("words") if w[4].strip()]
         except Exception:
             pass
+    broken = False
+    try:
+        import legacy
+        rows_txt = {}
+        for w in words:
+            rows_txt.setdefault((w[5], w[6]), []).append(w[4])
+        broken = legacy.page_text_broken([" ".join(v) for v in rows_txt.values()])
+    except Exception:
+        pass
+    if broken and ocr:
+        # lớp chữ hỏng (font thiếu bảng mã) -> đọc lại chữ đang hiện trên trang
+        try:
+            import ocrpage
+            if ocrpage.ocr_available():
+                return _rows_from_words(ocrpage.ocr_top_words(page, keep_text=True), fitz.Identity)
+        except Exception:
+            pass
+    if words and ocr:
+        # bản scan có sẵn lớp chữ của máy scan (hay sai, vd "ceNG HoA xA ngI") -> tự nhận dạng lại từ ảnh
+        try:
+            import ocrpage
+            if ocrpage.ocr_available() and ocrpage.text_layer_over_scan(page):
+                return _rows_from_words(ocrpage.ocr_top_words(page), fitz.Identity)
+        except Exception:
+            pass
     if len(words) < 8 and ocr:
         try:
             import ocrpage
@@ -563,6 +588,12 @@ def doc_info(page, ocr=True):
         txt = r[4].strip()
         if _is_qh(txt):
             return False
+        try:
+            import legacy
+            if legacy.bad_text(txt):      # dòng chữ hỏng mã -> không lấy làm tên
+                return False
+        except Exception:
+            pass
         letters = [c for c in txt if c.isalpha()]
         if len(letters) < 2:
             return False
@@ -626,17 +657,14 @@ def safe_name(s, limit=120):
 
 def doc_name(src_doc, pages, default, ocr=True):
     """Tên file (chưa có .pdf) cho 1 văn bản:
-       có trích yếu   -> 'so hoa ho so ngay 19.10.2026'
-       không trích yếu -> 'bao cao cong tac so hoa nam 2026 ngay 19.10.2026'   (không dấu, chữ thường)."""
+       có trích yếu   -> 'so hoa ho so'
+       không trích yếu -> 'bao cao cong tac so hoa nam 2026'   (không dấu, chữ thường)."""
     try:
         info = doc_info(src_doc[pages[0]], ocr)
     except Exception:
         info = {"trich_yeu": None, "tieu_de": None, "ngay": None}
-    # không dấu, chữ thường: "Báo cáo số hóa" -> "bao cao so hoa"
-    name = safe_name(no_accent(info["trich_yeu"] or info["tieu_de"] or "")).lower() or default
-    if info["ngay"]:
-        name += " ngay " + info["ngay"]
-    return name
+    # chỉ trích yếu hoặc tiêu đề, không dấu, chữ thường: "Báo cáo số hóa" -> "bao cao so hoa"
+    return safe_name(no_accent(info["trich_yeu"] or info["tieu_de"] or "")).lower() or default
 
 
 def save_docs(src_doc, docs, out_dir, base, progress=None, smart_names=True):

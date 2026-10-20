@@ -653,6 +653,9 @@ def pdf_to_docx(doc, out, dpi=200, progress=None, ocr=True):
                 import ocrpage
                 if ocrpage.ocr_available() and ocrpage.is_scanned(page):
                     scan = ocrpage.analyze(page)
+                elif ocrpage.ocr_available() and ocrpage.page_text_broken(page):
+                    # chữ hiện bình thường nhưng lớp chữ hỏng -> nhận dạng lại từ hình chữ
+                    scan = ocrpage.analyze(page, keep_text=True)
             except Exception:
                 scan = None
         if scan is not None:

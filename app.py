@@ -175,13 +175,27 @@ class PageView(QGraphicsView):
                 if self.win.go_page(self.win.cur - 1):
                     self.verticalScrollBar().setValue(self.verticalScrollBar().maximum())
 
+    def _line_at(self, x, y):
+        pdf, pno = self.win.pdf, self.win.cur
+        if pno in pdf._lines:
+            return pdf.line_at(pno, x, y)
+        # lần đầu đọc chữ của trang (trang scan / lớp chữ hỏng phải nhận dạng lại, mất vài giây)
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        self.win.status("Đang đọc chữ của trang...")
+        QApplication.processEvents()
+        try:
+            return pdf.line_at(pno, x, y)
+        finally:
+            QApplication.restoreOverrideCursor()
+            self.win.status("")
+
     def mouseMoveEvent(self, e):
         p = self.mapToScene(e.pos())
         if self.band_start is not None and self.band is not None:
             self.band.setRect(QRectF(self.band_start, p).normalized())
             return
         if self.win.mode == MODE_EDIT and self.win.pdf and self.editor is None:
-            ln = self.win.pdf.line_at(self.win.cur, p.x(), p.y())
+            ln = self._line_at(p.x(), p.y())
             if ln:
                 r = QRectF(ln.bbox.x0 - 1, ln.bbox.y0 - 1, ln.bbox.width + 2, ln.bbox.height + 2)
                 if self.hover is None:
@@ -216,7 +230,7 @@ class PageView(QGraphicsView):
         if not (0 <= p.x() <= pr.width and 0 <= p.y() <= pr.height):
             return
         if self.win.mode == MODE_EDIT:
-            ln = self.win.pdf.line_at(self.win.cur, p.x(), p.y())
+            ln = self._line_at(p.x(), p.y())
             if ln:
                 if not ln.horizontal:
                     self.win.status("Dòng chữ này bị xoay dọc – chưa hỗ trợ sửa trực tiếp. Hãy dùng Tẩy + Thêm chữ.")
@@ -276,7 +290,8 @@ class PageView(QGraphicsView):
         fam = w.cur_family()
         # sửa NGUYÊN ĐOẠN (hoặc nguyên ô bảng): tự xuống dòng trong đúng bề rộng như Word
         try:
-            para = w.pdf.para_for_line(w.cur, ln)
+            # dòng chữ tự nhận dạng lại trên bản scan: sửa từng dòng (khung dòng của máy scan không chuẩn)
+            para = None if (getattr(ln, "ocr", False) and ln.invisible) else w.pdf.para_for_line(w.cur, ln)
         except Exception:
             para = None
         if para is None:
@@ -1649,7 +1664,7 @@ class MainWindow(QMainWindow):
         self.build_thumbs()
         self.update_title()
         self.update_actions()
-        no_text = all(not pdf.lines(i) for i in range(min(3, pdf.page_count())))
+        no_text = all(not pdf.doc[i].get_text("words") for i in range(min(3, pdf.page_count())))
         msg = "Đã mở: %s – bấm vào dòng chữ để sửa." % os.path.basename(path)
         if no_text:
             msg = ("File này có vẻ là bản SCAN (ảnh) – không có lớp chữ để sửa trực tiếp. "

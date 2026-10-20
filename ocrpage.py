@@ -153,10 +153,10 @@ def is_scanned(page):
 # =============================================================================
 #  XỬ LÝ ẢNH
 # =============================================================================
-def _render(page, dpi):
+def _render(page, dpi, keep_text=False):
     tmp = None
     try:
-        if page.get_text("words"):
+        if not keep_text and page.get_text("words"):
             tmp, page = _textless(page)      # chỉ lấy ảnh scan, bỏ lớp chữ có sẵn (tránh chữ đúp)
     except Exception:
         pass
@@ -389,11 +389,11 @@ def _ref_fonts():
     return _FONTS
 
 
-def analyze(page, dpi=OCR_DPI):
+def analyze(page, dpi=OCR_DPI, keep_text=False):
     """-> dict(lines=[...như convert._page_lines...], tables=[ScanTable], segs=(hs,vs), pieces=[(rect,png)])"""
     import cv2
     from PIL import Image
-    rgb, _angle = _deskew(_render(page, dpi))
+    rgb, _angle = _deskew(_render(page, dpi, keep_text))
     H, W = rgb.shape[:2]
     scale = page.rect.width / W
     gray, dark, color = _masks(rgb)
@@ -531,13 +531,13 @@ def analyze(page, dpi=OCR_DPI):
     return {"lines": out, "tables": tables, "segs": segs, "pieces": pieces}
 
 
-def ocr_top_words(page, frac=0.5, dpi=200, skip_body=True):
+def ocr_top_words(page, frac=0.5, dpi=200, skip_body=True, keep_text=False):
     """Nhận dạng nhanh phần ĐẦU trang (tiêu đề, trích yếu, ngày tháng) -> list từ như page.get_text('words')."""
     clip = fitz.Rect(0, 0, page.rect.width, page.rect.height * frac)
     tmp = None
     src = page
     try:
-        if page.get_text("words"):
+        if not keep_text and page.get_text("words"):
             tmp, src = _textless(page)
     except Exception:
         pass
@@ -567,3 +567,61 @@ def ocr_top_words(page, frac=0.5, dpi=200, skip_body=True):
         except Exception:
             pass
     return [w for w in _ocr_words(clip, g, dpi) if w[4].strip()]
+
+
+def page_text_broken(page):
+    """Lớp chữ của trang bị hỏng (font thiếu bảng mã -> đọc ra ký tự lạ) dù chữ vẫn HIỆN trên trang."""
+    try:
+        import legacy
+        dd = page.get_text("dict")
+        texts = ["".join(s["text"] for s in l["spans"]) for b in dd["blocks"] if b.get("type", 0) == 0
+                 for l in b["lines"]]
+        return legacy.page_text_broken(texts)
+    except Exception:
+        return False
+
+
+def ocr_page_words(page, dpi=300, keep_text=True):
+    """Nhận dạng chữ cả trang như đang HIỆN (giữ lớp chữ hỏng để lấy hình chữ) -> list từ, toạ độ hiển thị."""
+    clip = fitz.Rect(0, 0, page.rect.width, page.rect.height)
+    tmp, src = None, page
+    if not keep_text:      # bản scan: chỉ đọc ảnh, bỏ lớp chữ có sẵn của máy scan
+        try:
+            tmp, src = _textless(page)
+        except Exception:
+            pass
+    pm = src.get_pixmap(dpi=dpi, colorspace=fitz.csGRAY, alpha=False)
+    g = np.frombuffer(pm.samples, dtype=np.uint8).reshape(pm.height, pm.stride)[:, :pm.width].copy()
+    return [w for w in _ocr_words(clip, g, dpi) if w[4].strip() and _good_word(w[4])]
+
+
+def ocr_line(page, rect, dpi=400):
+    """Nhận dạng chữ trong 1 dòng (toạ độ hiển thị) -> chuỗi, hoặc '' nếu không đọc được."""
+    clip = fitz.Rect(rect.x0 - 3, rect.y0 - 3, rect.x1 + 3, rect.y1 + 3) & page.rect
+    if clip.is_empty:
+        return ""
+    pm = page.get_pixmap(dpi=dpi, colorspace=fitz.csGRAY, alpha=False, clip=clip)
+    g = np.frombuffer(pm.samples, dtype=np.uint8).reshape(pm.height, pm.stride)[:, :pm.width].copy()
+    # thêm lề trắng để thư viện nhận dạng dòng chữ tốt hơn
+    pad = int(dpi * 0.15)
+    big = np.full((g.shape[0] + 2 * pad, g.shape[1] + 2 * pad), 255, np.uint8)
+    big[pad:pad + g.shape[0], pad:pad + g.shape[1]] = g
+    k = 72.0 / dpi
+    ws = _ocr_words(fitz.Rect(0, 0, big.shape[1] * k, big.shape[0] * k), big, dpi)
+    ws = sorted((w for w in ws if w[4].strip()), key=lambda w: (w[5], w[6], w[0]))
+    return " ".join(w[4] for w in ws)
+
+
+def overlay_text_rects(page):
+    """Khung các chữ vẽ ĐÈ LÊN ảnh scan (tức chữ người dùng vừa sửa / thêm), toạ độ hiển thị."""
+    try:
+        log = page.get_bboxlog()
+    except Exception:
+        return []
+    area = page.rect.get_area()
+    last = -1
+    for i, (k, r) in enumerate(log):
+        if k == "fill-image" and (fitz.Rect(r) & page.rect).get_area() >= 0.4 * area:
+            last = i
+    rot = page.rotation_matrix
+    return [fitz.Rect(r) * rot for k, r in log[last + 1:] if k in ("fill-text", "stroke-text")] if last >= 0 else []

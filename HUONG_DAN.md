@@ -70,6 +70,17 @@ Bấm nút **Chuyển đổi** → chọn kiểu → thêm file (chọn nhiều 
   giống cách soạn công văn trong Word; chữ ký, con dấu nằm dưới chữ nên bấm vào chữ để sửa không bị vướng ảnh.
 - Sau khi chuyển sang PDF có nút **"Mở PDF vừa tạo để sửa"**.
 
+## PDF scan có sẵn lớp chữ do máy scan nhận dạng
+Máy scan thường tự nhận dạng chữ nhưng hay sai (vd "ceNG HoA xA ngI cHU xcnia" thay cho "CỘNG HÒA XÃ HỘI CHỦ NGHĨA").
+Phần mềm bỏ lớp chữ đó, **tự nhận dạng lại chữ trên ảnh** (tiếng Việt, offline): bấm sửa hiện đúng chữ, sửa xong
+chữ cũ trên ảnh được phủ trắng rồi ghi chữ mới (Times New Roman); tách văn bản cũng đọc đúng tiêu đề.
+Lần đầu bấm vào trang chờ vài giây (con trỏ chuột hiện đồng hồ).
+
+## PDF có lớp chữ hỏng
+Có PDF chữ vẫn hiện bình thường nhưng font thiếu bảng mã, nên máy đọc ra ký tự lạ. Phần mềm tự nhận ra
+và **nhận dạng lại chữ đang hiện trên trang** (tiếng Việt, offline): bấm sửa hiện đúng chữ, chuyển Word ra chữ gõ được,
+tách văn bản đọc đúng tiêu đề. Lần đầu bấm vào trang đó chờ vài giây.
+
 ## Văn bản soạn bằng font cũ .VnTime (TCVN3) / VNI-Times
 PDF xuất từ văn bản dùng font .VnTime, .VnTimeH, .VnArial (bảng mã TCVN3/ABC) hoặc VNI-Times: phần mềm tự đổi chữ
 sang Unicode → khi bấm sửa hiện đúng tiếng Việt (không còn kiểu "Céng hoµ x· héi"), chữ mới viết bằng
@@ -95,11 +106,12 @@ Bấm **Tách văn bản** → chọn file PDF gộp (hoặc dùng file đang m�
   Quốc hiệu phải đi cặp với tên cơ quan bên trái (hoặc căn giữa trang như đơn từ). Rê chuột lên trang để xem lý do.
 - Máy nhận sai? **Bấm vào trang** để đặt / bỏ chỗ bắt đầu văn bản; **chuột phải** để đánh dấu trang trống / giữ trang.
 - Cách khác: *Theo trang trống* (trang trắng ngăn cách văn bản) hoặc *Cố định N trang mỗi văn bản*.
-- **✂ Tách & lưu** → mỗi văn bản 1 file, **tự đặt tên theo nội dung văn bản**:
-  - Có trích yếu "V/v ..." (hoặc "Về việc ...") → lấy trích yếu + ngày dưới Quốc hiệu, **không dấu, chữ thường**,
-    vd `V/v số hóa hồ sơ` → **`so hoa ho so ngay 19.10.2026.pdf`**
-  - Không có trích yếu → lấy tên văn bản (BÁO CÁO, TỜ TRÌNH, KẾ HOẠCH...) + dòng ngay dưới + ngày, vd
-    BÁO CÁO / Công tác số hóa năm 2026 → **`bao cao cong tac so hoa nam 2026 ngay 19.10.2026.pdf`**
+- **✂ Tách & lưu** → mỗi văn bản 1 file, **tự đặt tên theo trích yếu hoặc tiêu đề, không dấu, chữ thường**:
+  - Có trích yếu "V/v ..." (hoặc "Về việc ...") → lấy trích yếu, vd `V/v số hóa hồ sơ` → **`so hoa ho so.pdf`**
+  - Không có trích yếu → lấy tiêu đề văn bản (BÁO CÁO, TỜ TRÌNH, KẾ HOẠCH...) + dòng ngay dưới, vd
+    BÁO CÁO / Công tác số hóa năm 2026 → **`bao cao cong tac so hoa nam 2026.pdf`**
+  - Trùng tên thì tự thêm (1), (2)...; bản scan hoặc PDF có lớp chữ hỏng: tự nhận dạng chữ phần đầu trang.
+    Không đọc được tiêu đề thì đặt `TênGốc_VB01.pdf`...
   - Dòng Quốc hiệu "Cộng hòa xã hội chủ nghĩa Việt Nam" không bao giờ bị lấy làm tên.
   - Bản scan: tự nhận dạng chữ phần đầu trang. Không đọc được tiêu đề thì đặt `TênGốc_VB01.pdf`...
   Lưu trong thư mục `TênGốc_tach`,

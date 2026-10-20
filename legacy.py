@@ -200,3 +200,38 @@ def fix_words(words):
 
 def nfc(s):
     return unicodedata.normalize("NFC", s)
+
+
+# ---------------------------------------------------------------------------- lớp chữ hỏng
+def bad_text(t):
+    """Chữ đọc ra từ PDF bị hỏng (font thiếu bảng mã ToUnicode): ký tự điều khiển / ô vuông,
+    hoặc toàn ký hiệu không thành chữ (vd ' !"# $%&&')."""
+    if not t:
+        return False
+    s = [c for c in t if not c.isspace()]
+    if not s:
+        return any(ord(c) < 32 and c not in "\t\n\r" for c in t)
+    bad = sum(1 for c in s if ord(c) < 32 or c == "�")
+    if bad / len(s) > 0.2:
+        return True
+    # dấu chấm / gạch điền chỗ trống ("......", "-----"), ký hiệu toán (vùng PUA) -> trung tính
+    core = [c for c in s if c not in _FILL and not (0xE000 <= ord(c) <= 0xF8FF)]
+    alnum = sum(1 for c in core if c.isalnum())
+    if len(core) >= 4 and alnum / len(core) < 0.4:
+        return True
+    # chữ hoa / thường lẫn lộn vô lý giữa từ (vd 'ceNG HoA ngI cHU vIET') -> bảng mã font sai
+    words = re.findall(r"[^\W\d_]{2,}", t)
+    weird = [w for w in words if len(w) >= 3 and any(a.islower() and b.isupper() for a, b in zip(w, w[1:]))]
+    return len(weird) >= 3 and len(weird) >= 0.5 * len(words)
+
+
+_FILL = set(".-_…·•=,:;()[]/\\|*+~–—'\"?!«»“”‘’<>%")
+
+
+def page_text_broken(texts):
+    """texts: các dòng chữ của 1 trang -> True nếu phần lớn là chữ hỏng."""
+    cand = [t for t in texts if len(t.strip()) >= 4 or any(ord(c) < 32 and c not in "\t\n\r" for c in t)]
+    if len(cand) < 2:
+        return False
+    nb = sum(1 for t in cand if bad_text(t))
+    return nb >= 2 and nb >= 0.5 * len(cand)

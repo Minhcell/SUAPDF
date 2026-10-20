@@ -124,7 +124,12 @@ class GlyphFixer:
             # chữ / số không dấu: chỉ đổi khi hình đọc ra RẤT không giống (lỗi mã thật, vd 'd' thay cho 'ả')
             if c.isascii() and (best[bi] < 0.6 or sc > best[bi] * 0.72):
                 return c
-            return CANDIDATES[bi]
+            r = CANDIDATES[bi]
+            # chỉ sửa kiểu lỗi mã thật: chữ KHÔNG DẤU bị đọc thay cho chữ CÓ DẤU (vd 'd' -> 'ả').
+            # Không bao giờ: đổi chữ có dấu sang chữ khác, đổi hoa <-> thường, đổi sang chữ không dấu.
+            if not c.isascii() or r.isascii() or c.isupper() != r.isupper():
+                return c
+            return r
         return c
 
     # ---------------------------------------------------------------- dùng chung
@@ -167,6 +172,12 @@ class GlyphFixer:
                                 r = c
                             m[k] = r
                         out.append(r)
+                    # an toàn: nếu "sửa" quá nhiều chữ trong 1 đoạn -> nhiều khả năng so hình sai, giữ nguyên chữ gốc
+                    orig = [ch["c"] for ch in chars]
+                    nchg = sum(1 for a, b in zip(orig, out) if a != b)
+                    nlet = sum(1 for a in orig if a.isalpha())
+                    if nchg > max(2, 0.25 * nlet):
+                        out = orig
                     s["text"] = "".join(out)
         return raw
 

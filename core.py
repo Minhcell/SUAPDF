@@ -188,7 +188,7 @@ def font_tag(path, session=""):
 # ----------------------------------------------------------------------------
 class Line:
     __slots__ = ("bbox", "text", "spans", "size", "color", "bold", "italic",
-                 "origin", "font", "ascender", "horizontal", "invisible")
+                 "origin", "font", "ascender", "horizontal", "invisible", "ocr")
 
     def __init__(self, ln, rot=None):
         spans = [s for s in ln["spans"] if s["text"].strip() or len(ln["spans"]) == 1]
@@ -215,6 +215,7 @@ class Line:
         self.horizontal = abs(d.x - 1) < 1e-3 and abs(d.y) < 1e-3
         # chữ ẩn (lớp OCR của bản scan): chữ thấy được thực ra là ảnh
         self.invisible = all(s.get("alpha", 255) == 0 for s in spans)
+        self.ocr = False      # chữ do phần mềm nhận dạng lại (lớp chữ gốc hỏng / bản scan)
 
 
 # Một số font (vd Times New Roman của Windows) dùng chung 1 hình chữ cho "-" và
@@ -345,8 +346,131 @@ class PdfDocument:
                     if not "".join(s["text"] for s in ln["spans"]).strip():
                         continue
                     out.append(Line(ln, page.rotation_matrix))
+            self._ocr_broken(pno, page, out)
             self._lines[pno] = out
         return self._lines[pno]
+
+    def _ocr_broken(self, pno, page, lines):
+        """Trang có lớp chữ HỎNG (font thiếu bảng mã, đọc ra ký tự lạ): nhận dạng lại chữ đang hiện trên
+        trang (OCR tiếng Việt) để khi bấm sửa hiện đúng chữ tiếng Việt."""
+        try:
+            import legacy
+            import ocrpage
+            raw = ["".join(sp.get("text", "") for sp in l.spans) for l in lines]   # chưa bỏ ký tự hỏng
+            broken = legacy.page_text_broken(raw)
+            # bản SCAN có sẵn lớp chữ do máy scan nhận dạng (thường sai: "ceNG HoA xA ngI...") -> tự nhận dạng lại
+            scan = False
+            if not broken and lines:
+                kinds = self.__dict__.setdefault("_scan_kind", {})
+                if pno not in kinds:
+                    kinds[pno] = ocrpage.text_layer_over_scan(page)
+                scan = kinds[pno]
+            if not broken and not scan:
+                return
+            # chữ do chính phần mềm vừa ghi đè lên ảnh scan (đã đúng) -> không đụng tới
+            ov = ocrpage.overlay_text_rects(page) if scan else []
+
+            def is_mine(l):
+                return any(l.bbox.contains(fitz.Point((r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2)) for r in ov)
+            if scan:
+                for l in lines:
+                    if not is_mine(l):
+                        l.invisible = True        # sửa chữ -> phủ trắng chữ trên ảnh scan rồi mới ghi chữ mới
+            cache = self.__dict__.setdefault("_ocr_cache", {})
+            if pno not in cache:
+                cache[pno] = ocrpage.ocr_page_words(page, keep_text=not scan) if ocrpage.ocr_available() else []
+            words = cache[pno]
+            if scan:
+                self._scan_lines(page, lines, words, is_mine)
+                return
+            # gán từng chữ nhận dạng được cho dòng gần nhất cùng hàng (khung chữ lớp gốc có thể hẹp hơn ảnh)
+            todo = [i for i, (l, rt) in enumerate(zip(lines, raw))
+                    if not is_mine(l) and (scan or legacy.bad_text(rt) or not l.text.strip())]
+            got = {i: [] for i in todo}
+            for w in words:
+                cy = (w[1] + w[3]) / 2
+                h = max(4.0, w[3] - w[1])
+                best, bd = None, None
+                for i in todo:
+                    b = lines[i].bbox
+                    if not (b.y0 - h * 0.3 <= cy <= b.y1 + h * 0.3):
+                        continue
+                    d = max(0.0, b.x0 - w[2], w[0] - b.x1)
+                    if bd is None or d < bd:
+                        best, bd = i, d
+                if best is not None and bd < h * 3:
+                    got[best].append(w)
+            for i in todo:
+                l, rt = lines[i], raw[i]
+                ws = sorted(got[i], key=lambda w: w[0])
+                if ws and not legacy.bad_text(" ".join(w[4] for w in ws)):
+                    l.text = " ".join(w[4] for w in ws)
+                    l.ocr = True
+                    if scan:
+                        # bản scan: vị trí / cỡ chữ lấy theo chữ thật trên ảnh (lớp chữ máy scan hay lệch)
+                        bb = fitz.Rect(ws[0][:4])
+                        for w in ws:
+                            bb |= fitz.Rect(w[:4])
+                        hs = sorted(w[3] - w[1] for w in ws)
+                        hh = hs[len(hs) // 2]
+                        l.bbox = bb
+                        l.size = max(6.0, round(hh / 1.1 * 2) / 2)
+                        l.origin = fitz.Point(bb.x0, bb.y1 - hh * 0.22)
+                        l.ascender = 0.89
+                elif legacy.bad_text(rt):
+                    l.text = ""
+        except Exception:
+            pass
+
+    def _scan_lines(self, page, lines, words, is_mine):
+        """Bản scan có lớp chữ máy scan: dựng lại các dòng theo chữ tự nhận dạng trên ảnh
+        (đúng vị trí, cỡ chữ, nội dung); lớp chữ cũ của máy scan gắn vào dòng để xoá khi sửa."""
+        keep = [l for l in lines if is_mine(l)]
+        old = [l for l in lines if not is_mine(l)]
+        rows = []
+        for w in sorted(words, key=lambda w: ((w[1] + w[3]) / 2, w[0])):
+            cy = (w[1] + w[3]) / 2
+            h = max(4.0, w[3] - w[1])
+            for r in rows:
+                hh = max(h, r["h"])
+                if abs(cy - r["cy"]) < 0.5 * hh and w[0] - r["x1"] < 2.5 * hh and w[2] > r["x0"] - 2.5 * hh:
+                    r["w"].append(w)
+                    r["x0"], r["x1"] = min(r["x0"], w[0]), max(r["x1"], w[2])
+                    break
+            else:
+                rows.append({"cy": cy, "h": h, "x0": w[0], "x1": w[2], "w": [w]})
+        new = []
+        der = page.derotation_matrix
+        for r in rows:
+            ws = sorted(r["w"], key=lambda w: w[0])
+            text = " ".join(w[4] for w in ws)
+            bb = fitz.Rect(ws[0][:4])
+            for w in ws:
+                bb |= fitz.Rect(w[:4])
+            hs = sorted(w[3] - w[1] for w in ws)
+            hh = hs[len(hs) // 2]
+            size = max(6.0, round(hh / 1.1 * 2) / 2)
+            ex = fitz.Rect(bb.x0 - 2 * hh, bb.y0, bb.x1 + 2 * hh, bb.y1)
+            under = [l for l in old if (min(l.bbox.y1, bb.y1) - max(l.bbox.y0, bb.y0)) > 0.3 * min(l.bbox.height, bb.height)
+                     and l.bbox.x1 > ex.x0 and l.bbox.x0 < ex.x1]
+            pb = bb * der
+            span = {"text": text, "bbox": tuple(pb), "size": size, "font": "", "flags": 0, "color": 0,
+                    "ascender": 0.89, "origin": tuple(fitz.Point(bb.x0, bb.y1 - hh * 0.22) * der)}
+            spans = [span] + [sp for l in under for sp in l.spans]
+            if under:
+                s0 = under[0].spans[0]
+                span["flags"], span["color"] = s0.get("flags", 0), s0.get("color", 0)
+            ln = Line({"spans": spans, "bbox": tuple(pb), "dir": (1, 0)}, page.rotation_matrix)
+            ln.text = text
+            ln.bbox = bb
+            ln.size = size
+            ln.origin = fitz.Point(bb.x0, bb.y1 - hh * 0.22)
+            ln.ascender = 0.89
+            ln.invisible = True          # sửa -> phủ trắng chữ trên ảnh rồi mới ghi chữ mới
+            ln.ocr = True
+            ln.horizontal = True
+            new.append(ln)
+        lines[:] = sorted(keep + new, key=lambda l: (l.bbox.y0, l.bbox.x0))
 
     def line_at(self, pno, x, y, pad=1.5):
         best = None
@@ -426,10 +550,26 @@ class PdfDocument:
                     got.append((fitz.Rect(ln["bbox"]) * rot, t))
             out = []
             for l in lines:
+                if getattr(l, "ocr", False):
+                    out.append(l.text)
+                    continue
                 parts = [(rb.x0, t) for rb, t in got
                          if l.bbox.contains(fitz.Point((rb.x0 + rb.x1) / 2, (rb.y0 + rb.y1) / 2))]
                 parts.sort()
                 t = norm_text("".join(p[1] for p in parts)).strip()
+                try:
+                    import legacy
+                    if legacy.bad_text(t):      # lớp chữ hỏng -> dùng chữ đã nhận dạng lại
+                        t = ""
+                    if not t and legacy.bad_text(l.text):
+                        # chỉ riêng dòng này hỏng (vd tiêu đề in hoa dùng font khác) -> đọc lại hình chữ của dòng
+                        import ocrpage
+                        if ocrpage.ocr_available():
+                            o = ocrpage.ocr_line(page, l.bbox)
+                            if o and not legacy.bad_text(o):
+                                t = o
+                except Exception:
+                    pass
                 out.append(t if t else l.text)
             return out
         except Exception:
@@ -511,7 +651,11 @@ class PdfDocument:
                     wrapped = not re.match(r"^\s*([-+•*–]|\d+[.)]|[a-zđ][.)])\s", l.text)
                 ok = (abs(l.size - last.size) < 0.6 and 0.95 * last.size <= gap <= 1.75 * last.size
                       and wrapped and l.bbox.x0 <= cur[0].bbox.x0 + 1.0
-                      and l.bbox.x0 >= regL - 1.0)
+                      and l.bbox.x0 >= regL - 1.0
+                      # cùng cột: không nối dòng cột bên kia (vd "PHÒNG GIÁO DỤC" dưới cột Quốc hiệu)
+                      and l.bbox.x0 >= cur[0].bbox.x0 - max(40.0, 3.5 * last.size)
+                      and min(l.bbox.x1, last.bbox.x1) - max(l.bbox.x0, last.bbox.x0)
+                      >= 0.5 * min(l.bbox.width, last.bbox.width))
                 if ok and len(cur) >= 2:
                     pitch = (cur[-1].origin.y - cur[0].origin.y) / (len(cur) - 1)
                     ok = abs(gap - pitch) < 1.2 and abs(l.bbox.x0 - cur[1].bbox.x0) < 1.5

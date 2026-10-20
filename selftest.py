@@ -288,7 +288,7 @@ def run(out_dir):
         assert texts[0] == "Cộng hoà xã hội chủ nghĩa Việt Nam" and texts[1] == "Độc lập - Tự do - Hạnh phúc", texts
         nm = splitter.doc_name(pd.doc, [0], "VB")
         log("    ten file: " + nm)
-        assert nm == "bao cao cong tac so hoa nam 2026 ngay 19.10.2026", nm
+        assert nm == "bao cao cong tac so hoa nam 2026", nm
         assert legacy.vni("Coäng hoøa xaõ hoäi chuû nghóa Vieät Nam") == "Cộng hòa xã hội chủ nghĩa Việt Nam"
         # gõ bằng Unikey bảng mã TCVN3 -> tự đổi; font .VnTime khi gõ -> dùng Times New Roman
         assert legacy.looks_tcvn3("§· kiÓm tra", 1) and legacy.tcvn3("§· kiÓm tra") == "Đã kiểm tra"
@@ -296,6 +296,49 @@ def run(out_dir):
         assert fm.resolve(".VnTime")[0] == fm.resolve("Times New Roman")[0]
 
     step("Font ma cu .VnTime (TCVN3) / VNI -> sua chu, tach van ban dung tieng Viet", legacy_check)
+
+    def broken_layer_check():
+        # PDF chữ hiện bình thường nhưng font thiếu bảng mã ToUnicode -> đọc ra ký tự lạ.
+        # Phải nhận dạng lại chữ: bấm sửa hiện đúng tiếng Việt, tách văn bản đặt đúng tên
+        import ocrpage
+        import splitter
+        if not ocrpage.ocr_available():
+            raise RuntimeError("thieu du lieu OCR")
+        d = fitz.open()
+        pg = d.new_page()
+        ff = fitz.Font(fontfile=path)
+        for t, y, sz in (("CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM", 60, 12), ("Độc lập - Tự do - Hạnh phúc", 76, 13),
+                         ("BÁO CÁO", 170, 15), ("Công tác số hóa năm 2026", 190, 13)):
+            pg.insert_text((297 - ff.text_length(t, sz) / 2, y), t, fontname="F0", fontfile=path, fontsize=sz)
+        for k in range(6):
+            pg.insert_text((72, 240 + k * 18), "Nội dung văn bản dòng %d, đề nghị các đơn vị thực hiện nghiêm túc." % k,
+                           fontname="F0", fontfile=path, fontsize=13)
+        src = out("hong.pdf")
+        d.save(src)
+        d = fitz.open(src)
+        for x in range(1, d.xref_length()):
+            if d.xref_get_key(x, "ToUnicode")[0] != "null":
+                d.xref_set_key(x, "ToUnicode", "null")
+        src2 = out("hong2.pdf")
+        d.save(src2)
+        pd = core.PdfDocument(src2)
+        texts = [l.text for l in pd.lines(0)]
+        nm = splitter.doc_name(pd.doc, [0], "VB")
+        log("    lop chu hong -> %s | ten: %s" % (texts[:3], nm))
+        assert any("HÒA" in t or "HOÀ" in t for t in texts), texts
+        assert nm.startswith("bao cao cong tac so hoa"), nm
+
+        import legacy
+        assert legacy.bad_text("ceNG HoA xA ngI cHU xcnia vIET NAM")
+        assert not legacy.bad_text("CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM")
+        assert not legacy.bad_text("Đo pH của dung dịch NaOH và HCl bằng mL")
+        assert not legacy.bad_text("Họ tên: ...........  SBD: ......")
+        # dòng tiêu đề in hoa đọc ra chữ lẫn hoa/thường vô nghĩa -> bấm sửa phải hiện đúng tiếng Việt
+        o = ocrpage.ocr_line(pd.doc[0], [l for l in pd.lines(0) if "HÒA" in l.text or "HOÀ" in l.text][0].bbox)
+        log("    doc lai 1 dong: " + o)
+        assert "VIỆT NAM" in o, o
+
+    step("PDF lop chu hong (font thieu bang ma) -> nhan dang lai chu khi sua / tach", broken_layer_check)
 
     def merge_check():
         # gộp nhiều PDF -> 1 file; file gốc không đổi; không ghi đè file nguồn
@@ -357,8 +400,8 @@ def run(out_dir):
             p2.insert_text((297 - f.text_length(t, sz) / 2, y), t, fontname="F0", fontfile=path, fontsize=sz)
         name2 = splitter.doc_name(d2, [0], "VB02")
         log("    ten file: %s | %s" % (name, name2))
-        assert name == "bao cao tinh hinh thuc hien nhiem vu quy iii ngay 10.10.2026", name
-        assert name2 == "so hoa ho so ngay 19.10.2026", name2
+        assert name == "bao cao tinh hinh thuc hien nhiem vu quy iii", name
+        assert name2 == "so hoa ho so", name2
         # trang trống kiểu scan
         res = []
         for kind in ("so_trang", "lem", "dau_do", "mot_dong"):
@@ -407,10 +450,24 @@ def run(out_dir):
         r = (ocrpage.is_scanned(s2[0]), ocrpage.is_scanned(s2[1]), ocrpage.is_scanned(d[0]))
         log("    scan co lop chu an / chu tren anh / ban so: %s" % (r,))
         assert r == (True, True, False), r
+        # lớp chữ của máy scan nhận dạng SAI ("ceNG HoA xA ngI...") -> bấm sửa phải hiện chữ tự nhận dạng lại
+        if ocrpage.ocr_available():
+            s3 = fitz.open()
+            q3 = s3.new_page()
+            q3.insert_image(q3.rect, stream=p.get_pixmap(dpi=200).tobytes("png"))
+            for k in range(12):
+                q3.insert_text((60, 100 + k * 18), "Nei dUng vAn bAn dong %d thUc nien" % k, fontsize=13,
+                               fontname="helv", render_mode=3)
+            src3 = out("scan_lop_sai.pdf")
+            s3.save(src3)
+            pd3 = core.PdfDocument(src3)
+            t3 = [l.text for l in pd3.lines(0)]
+            log("    lop chu may scan sai -> %s" % t3[:2])
+            assert any("Nội dung văn bản dòng" in t for t in t3), t3
 
     step("PDF scan co san lop chu -> Word khong bi chu chong (nhan la trang scan)", scan_layer_check)
 
-    step("Tach: dat ten theo trich yeu (V/v) hoac ten van ban + ngay, bo trang lem / chi co so trang", split_name_check)
+    step("Tach: dat ten theo trich yeu (V/v) hoac ten van ban, khong dau, bo trang lem / chi co so trang", split_name_check)
 
     def glyph_check():
         # font khai báo sai mã: hình chữ 'ả' nhưng đọc ra 'd' -> phải sửa thành 'ả', giữ 'd' thật
