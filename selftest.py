@@ -340,6 +340,30 @@ def run(out_dir):
 
     step("PDF lop chu hong (font thieu bang ma) -> nhan dang lai chu khi sua / tach", broken_layer_check)
 
+    def scan_edit_check():
+        # PDF scan / ảnh JPG-PNG (không có lớp chữ): mở và sửa TRỰC TIẾP – tự nhận dạng chữ trên ảnh
+        import ocrpage
+        if not ocrpage.ocr_available():
+            raise RuntimeError("thieu du lieu OCR")
+        d = fitz.open()
+        pg = d.new_page()
+        for k in range(8):
+            pg.insert_text((60, 100 + k * 20), "Nội dung văn bản dòng %d cần sửa" % k, fontname="F0", fontfile=path,
+                           fontsize=13)
+        img = out("anh_scan.png")
+        pg.get_pixmap(dpi=150).save(img)
+        pd = core.PdfDocument(img)
+        assert pd.page_count() == 1 and not pd.doc[0].get_text("words")
+        ls = pd.lines(0)
+        ln = next((l for l in ls if "dòng 3" in l.text), None)
+        log("    anh scan -> %d dong, vd: %s" % (len(ls), ln.text if ln else ls[:2]))
+        assert ln is not None and ln.invisible, [l.text for l in ls]
+        pd.replace_line(0, ln, "Dòng đã sửa trực tiếp trên bản scan", fm, fam, 13, (0, 0, 0), False, False)
+        t = [l.text for l in pd.lines(0)]
+        assert "Dòng đã sửa trực tiếp trên bản scan" in t and not any("dòng 3" in x for x in t), t
+
+    step("Sua truc tiep ban scan / anh JPG-PNG (tu nhan dang chu)", scan_edit_check)
+
     def merge_check():
         # gộp nhiều PDF -> 1 file; file gốc không đổi; không ghi đè file nguồn
         import merger

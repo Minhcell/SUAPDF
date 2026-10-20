@@ -270,14 +270,38 @@ def apply_text_only_redactions(page):
         page.apply_redactions(images=REDACT_KW["images"])
 
 
+IMAGE_EXT = (".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp", ".gif", ".webp", ".jfif")
+OFFICE_EXT = (".doc", ".docx", ".docm", ".rtf", ".odt", ".xls", ".xlsx", ".xlsm", ".xlsb", ".ods")
+
+
+def open_as_pdf_bytes(path):
+    """Đọc file thành PDF (trong bộ nhớ) để sửa: PDF giữ nguyên; ảnh (JPG/PNG/TIF... ảnh scan) -> mỗi ảnh 1 trang;
+    Word/Excel -> chuyển sang PDF (cần Word/Excel hoặc LibreOffice trên máy). File gốc KHÔNG bị sửa."""
+    ext = os.path.splitext(path)[1].lower()
+    if ext in IMAGE_EXT:
+        src = fitz.open(path)
+        out = fitz.open()
+        for i in range(src.page_count):        # TIF nhiều trang -> nhiều trang
+            one = fitz.open("pdf", src.convert_to_pdf(i, i))
+            out.insert_pdf(one)
+        return out.tobytes(garbage=3, deflate=True)
+    if ext in OFFICE_EXT:
+        import tempfile
+        import convert
+        tmp = os.path.join(tempfile.mkdtemp(prefix="suapdf_"), "tam.pdf")
+        convert.office_to_pdf(path, tmp)
+        with open(tmp, "rb") as f:
+            return f.read()
+    with open(path, "rb") as f:
+        return f.read()
+
+
 class PdfDocument:
     MAX_UNDO = 30
 
     def __init__(self, path, password=None):
         self.path = path
-        with open(path, "rb") as f:
-            data = f.read()
-        self.doc = fitz.open(stream=data, filetype="pdf")
+        self.doc = fitz.open(stream=open_as_pdf_bytes(path), filetype="pdf")
         self.undo_stack, self.redo_stack = [], []
         self.modified = False
         self._lines = {}
@@ -359,11 +383,13 @@ class PdfDocument:
             raw = ["".join(sp.get("text", "") for sp in l.spans) for l in lines]   # chưa bỏ ký tự hỏng
             broken = legacy.page_text_broken(raw)
             # bản SCAN có sẵn lớp chữ do máy scan nhận dạng (thường sai: "ceNG HoA xA ngI...") -> tự nhận dạng lại
+            # bản SCAN chỉ có ảnh (không có lớp chữ) -> nhận dạng chữ trên ảnh để sửa trực tiếp
             scan = False
-            if not broken and lines:
+            if not broken:
                 kinds = self.__dict__.setdefault("_scan_kind", {})
                 if pno not in kinds:
-                    kinds[pno] = ocrpage.text_layer_over_scan(page)
+                    kinds[pno] = (ocrpage.text_layer_over_scan(page) if lines else ocrpage.is_scanned(page)) \
+                        and ocrpage.ocr_available()
                 scan = kinds[pno]
             if not broken and not scan:
                 return
@@ -441,15 +467,34 @@ class PdfDocument:
                 rows.append({"cy": cy, "h": h, "x0": w[0], "x1": w[2], "w": [w]})
         new = []
         der = page.derotation_matrix
+        try:
+            import ocrpage
+            white = ocrpage.overlay_fill_rects(page)     # chỗ chữ cũ đã bị phủ trắng khi sửa / tẩy
+        except Exception:
+            white = []
+        prepared = []
         for r in rows:
             ws = sorted(r["w"], key=lambda w: w[0])
+            ws = [w for w in ws if not any(q.contains(fitz.Point((w[0] + w[2]) / 2, (w[1] + w[3]) / 2)) for q in white)]
+            if not ws:
+                continue
+            bb = fitz.Rect(ws[0][:4])
+            for w in ws:
+                bb |= fitz.Rect(w[:4])
+            prepared.append((bb, ws))
+        try:
+            import ocrpage
+            styles = ocrpage.row_styles(page, prepared)
+        except Exception:
+            styles = [(None, False)] * len(prepared)
+        for (bb0, ws), (st_size, st_bold) in zip(prepared, styles):
             text = " ".join(w[4] for w in ws)
             bb = fitz.Rect(ws[0][:4])
             for w in ws:
                 bb |= fitz.Rect(w[:4])
             hs = sorted(w[3] - w[1] for w in ws)
             hh = hs[len(hs) // 2]
-            size = max(6.0, round(hh / 1.1 * 2) / 2)
+            size = st_size or max(6.0, round(hh / 1.1 * 2) / 2)
             ex = fitz.Rect(bb.x0 - 2 * hh, bb.y0, bb.x1 + 2 * hh, bb.y1)
             under = [l for l in old if (min(l.bbox.y1, bb.y1) - max(l.bbox.y0, bb.y0)) > 0.3 * min(l.bbox.height, bb.height)
                      and l.bbox.x1 > ex.x0 and l.bbox.x0 < ex.x1]
@@ -469,6 +514,7 @@ class PdfDocument:
             ln.invisible = True          # sửa -> phủ trắng chữ trên ảnh rồi mới ghi chữ mới
             ln.ocr = True
             ln.horizontal = True
+            ln.bold = bool(st_bold)
             new.append(ln)
         lines[:] = sorted(keep + new, key=lambda l: (l.bbox.y0, l.bbox.x0))
 

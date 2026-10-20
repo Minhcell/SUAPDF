@@ -625,3 +625,65 @@ def overlay_text_rects(page):
             last = i
     rot = page.rotation_matrix
     return [fitz.Rect(r) * rot for k, r in log[last + 1:] if k in ("fill-text", "stroke-text")] if last >= 0 else []
+
+
+def overlay_fill_rects(page):
+    """Khung các vùng phủ (tẩy / phủ trắng) vẽ ĐÈ LÊN ảnh scan, toạ độ hiển thị."""
+    try:
+        log = page.get_bboxlog()
+    except Exception:
+        return []
+    area = page.rect.get_area()
+    last = -1
+    for i, (k, r) in enumerate(log):
+        if k == "fill-image" and (fitz.Rect(r) & page.rect).get_area() >= 0.4 * area:
+            last = i
+    rot = page.rotation_matrix
+    return [fitz.Rect(r) * rot for k, r in log[last + 1:] if k == "fill-path"] if last >= 0 else []
+
+
+def row_styles(page, rows, dpi=200):
+    """rows: list (bbox hiển thị, list từ). -> list (cỡ chữ pt, đậm?) đo trên ảnh trang scan:
+    cỡ chữ theo bề rộng từ so với Times New Roman, chữ đậm theo độ dày nét (so với cả trang)."""
+    tmp, src = None, page
+    try:
+        if page.get_text("words"):
+            tmp, src = _textless(page)
+    except Exception:
+        pass
+    pm = src.get_pixmap(dpi=dpi, colorspace=fitz.csGRAY, alpha=False)
+    g = np.frombuffer(pm.samples, dtype=np.uint8).reshape(pm.height, pm.stride)[:, :pm.width]
+    sc = dpi / 72.0
+    paper = float(np.percentile(g, 90)) if g.size else 255.0
+    ink = g < min(150, paper - 60)
+    strokes = []
+    for bb, _ws in rows:
+        sub = ink[max(0, int(bb.y0 * sc)):int(bb.y1 * sc) + 1, max(0, int(bb.x0 * sc)):int(bb.x1 * sc) + 1]
+        if sub.size == 0 or sub.sum() < 10:
+            strokes.append(None)
+            continue
+        prof = sub.sum(axis=1)
+        core_rows = np.where(prof >= prof.max() * 0.45)[0]
+        rr = sub[core_rows.min():core_rows.max() + 1] if len(core_rows) else sub
+        r8 = rr.astype(np.int8)
+        d = np.diff(np.concatenate([np.zeros((r8.shape[0], 1), np.int8), r8,
+                                    np.zeros((r8.shape[0], 1), np.int8)], axis=1), axis=1)
+        strokes.append(rr.sum() / max(1, int((d == 1).sum())) / sc)     # độ dày nét (pt)
+    fonts = _ref_fonts()
+    out = []
+    rel = [st / max(6.0, sorted(w[3] - w[1] for w in ws)[len(ws) // 2] / 1.1)
+           for (bb, ws), st in zip(rows, strokes) if st]
+    med = float(np.median(rel)) if rel else 0.0
+    for (bb, ws), st in zip(rows, strokes):
+        h = sorted(w[3] - w[1] for w in ws)[len(ws) // 2]
+        size0 = max(6.0, h / 1.1)
+        bold = bool(st and med and st / size0 > med * 1.25)
+        f = fonts.get("bold" if bold else "regular")
+        wpx = sum(w[2] - w[0] for w in ws)
+        wun = sum(f.text_length(w[4], 1.0) for w in ws) if f else 0
+        # khung từ do nhận dạng ôm sát nét chữ (hẹp hơn bề rộng chữ thật ~4%)
+        size = wpx / wun * 1.04 if wun > 0 and sum(len(w[4]) for w in ws) >= 3 else size0
+        if not (0.7 * size0 <= size <= 1.6 * size0):
+            size = size0
+        out.append((round(size * 2) / 2, bold))
+    return out

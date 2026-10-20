@@ -1235,7 +1235,7 @@ class MergeDialog(QDialog):
         outer.addLayout(bb)
         self.files.model().rowsMoved.connect(lambda *_: self.update_total())
         self.resize(640, 440)
-        if win.pdf and os.path.isfile(win.pdf.path):
+        if win.pdf and os.path.isfile(win.pdf.path) and win.pdf.path.lower().endswith(".pdf"):
             self._add(win.pdf.path)
         self.update_total()
 
@@ -1628,20 +1628,30 @@ class MainWindow(QMainWindow):
     def dropEvent(self, e):
         for u in e.mimeData().urls():
             p = u.toLocalFile()
-            if p.lower().endswith(".pdf"):
-                self.open_file(p)
+            if p.lower().endswith((".pdf",) + core.IMAGE_EXT + core.OFFICE_EXT):
+                if self.confirm_discard():
+                    self.open_file(p)
                 break
 
     def open_dialog(self):
         if not self.confirm_discard():
             return
-        p, _ = QFileDialog.getOpenFileName(self, "Mở file PDF", self.last_dir, "PDF (*.pdf)")
+        p, _ = QFileDialog.getOpenFileName(
+            self, "Mở file để sửa", self.last_dir,
+            "File hỗ trợ (*.pdf *.jpg *.jpeg *.png *.tif *.tiff *.bmp *.gif *.webp *.jfif "
+            "*.doc *.docx *.rtf *.odt *.xls *.xlsx *.ods);;PDF (*.pdf);;"
+            "Ảnh scan (*.jpg *.jpeg *.png *.tif *.tiff *.bmp *.gif *.webp *.jfif);;"
+            "Word / Excel (*.doc *.docx *.rtf *.odt *.xls *.xlsx *.ods);;Tất cả (*.*)")
         if p:
             self.open_file(p)
 
     def open_file(self, path):
         try:
-            pdf = core.PdfDocument(path)
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+            try:
+                pdf = core.PdfDocument(path)
+            finally:
+                QApplication.restoreOverrideCursor()
             if pdf.needs_pass():
                 pw, ok = QInputDialog.getText(self, "Mật khẩu", "File PDF có mật khẩu. Nhập mật khẩu:", echo=2)
                 if not ok or not pdf.authenticate(pw):
@@ -1667,9 +1677,9 @@ class MainWindow(QMainWindow):
         no_text = all(not pdf.doc[i].get_text("words") for i in range(min(3, pdf.page_count())))
         msg = "Đã mở: %s – bấm vào dòng chữ để sửa." % os.path.basename(path)
         if no_text:
-            msg = ("File này có vẻ là bản SCAN (ảnh) – không có lớp chữ để sửa trực tiếp. "
-                   "Dùng 'Tẩy' để phủ trắng chữ cũ, rồi 'Thêm chữ' để gõ chữ mới.")
-            QMessageBox.information(self, APP_TITLE, msg)
+            # bản SCAN (ảnh): vẫn sửa trực tiếp – bấm vào dòng chữ, phần mềm tự nhận dạng chữ trên ảnh
+            msg = ("Bản SCAN (ảnh): bấm vào dòng chữ để sửa trực tiếp – phần mềm tự nhận dạng chữ tiếng Việt "
+                   "(lần đầu mỗi trang chờ vài giây).")
         if pdf.has_digital_signature():
             QMessageBox.information(self, APP_TITLE,
                                     "File có CHỮ KÝ SỐ. Hình chữ ký / con dấu vẫn giữ nguyên vị trí, "

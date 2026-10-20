@@ -123,7 +123,10 @@ Phần mềm **không chuyển cả trang sang dạng khác** mà chỉ xoá đ�
 (không đụng tới đường kẻ bảng, hình ảnh, chữ ký) rồi ghi chữ mới vào đúng vị trí cũ.
 
 ## Lưu ý
-- **File scan** (ảnh chụp): không có chữ để sửa trực tiếp → dùng *Tẩy → Phủ trắng*, rồi *Thêm chữ*.
+- **File scan / ảnh chụp** (PDF scan, JPG, PNG, TIF...): **sửa trực tiếp** như file thường – bấm vào dòng chữ,
+  phần mềm tự nhận dạng chữ tiếng Việt trên ảnh (lần đầu mỗi trang chờ vài giây), sửa xong chữ cũ được phủ trắng
+  và ghi chữ mới đúng cỡ, đúng kiểu đậm. Mở được cả file Word / Excel (cần Word/Excel hoặc LibreOffice trên máy).
+  File gốc không bị sửa – lưu thành file mới.
 - **File có chữ ký số**: hình chữ ký giữ nguyên, nhưng sửa nội dung thì chữ ký số mất hiệu lực xác thực (đúng quy định PDF).
 - Dòng chữ sửa dài hơn bản gốc sẽ kéo dài sang phải (không tự đẩy các dòng khác) – hãy dùng Enter để xuống dòng nếu cần.
 
