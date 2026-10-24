@@ -266,13 +266,17 @@ def _tables(hor, ver, scale, dpi):
             continue
         nr, nc = len(rows) - 1, len(cols) - 1
 
+        # đường kẻ chạy gần hết bề ngang / bề dọc bảng -> coi là kẻ suốt (bản scan hay đứt nét ở ô hẹp)
+        full_h = {yy: sub_h[max(0, yy - 3):yy + 4, cols[0]:cols[-1]].any(axis=0).mean() > 0.8 for yy in rows}
+        full_v = {xx: sub_v[rows[0]:rows[-1], max(0, xx - 3):xx + 4].any(axis=1).mean() > 0.8 for xx in cols}
+
         def has_h(yy, x0, x1):   # đường ngang tại yy trên đoạn [x0,x1]
             band = sub_h[max(0, yy - 3):yy + 4, x0:x1].any(axis=0)
-            return band.mean() > 0.6 if band.size else False
+            return band.mean() > (0.3 if full_h.get(yy) else 0.6) if band.size else False
 
         def has_v(xx, y0, y1):
             band = sub_v[y0:y1, max(0, xx - 3):xx + 4].any(axis=1)
-            return band.mean() > 0.6 if band.size else False
+            return band.mean() > (0.3 if full_v.get(xx) else 0.6) if band.size else False
 
         # gộp ô: union-find trên lưới
         parent = list(range(nr * nc))
@@ -400,6 +404,330 @@ def _ref_fonts():
     return _FONTS
 
 
+_NARROW_OK = set("1lIi|!.,:;'`-()[]/\\")
+
+
+def _min_width(text, h):
+    """Bề rộng tối thiểu hợp lý của 1 từ cao h (chữ hẹp như l, i, 1 tính ít hơn)."""
+    return h * sum(0.08 if c in _NARROW_OK else 0.2 for c in text if not c.isspace())
+
+
+def _baseline(mask, b, scale):
+    """Đường chân chữ thật của 1 dòng (đo trên ảnh: hàng cuối còn đậm mực, bỏ qua phần đuôi g, p, y)."""
+    y0, y1 = int(b.y0 / scale), int(b.y1 / scale) + 1
+    x0, x1 = int(b.x0 / scale), int(b.x1 / scale) + 1
+    sub = mask[max(0, y0):y1, max(0, x0):x1]
+    if sub.size == 0:
+        return None
+    prof = sub.sum(axis=1)
+    if prof.max() <= 0:
+        return None
+    on = prof >= prof.max() * 0.35
+    runs, st = [], None
+    for i, v in enumerate(on):
+        if v and st is None:
+            st = i
+        elif not v and st is not None:
+            runs.append((st, i))
+            st = None
+    if st is not None:
+        runs.append((st, len(on)))
+    if not runs:
+        return None
+    # khung dòng của bộ nhận dạng có khi cao gấp đôi, lấn sang dòng kề -> bỏ dải mực bị cắt ở mép khung,
+    # lấy dải mực chính (dày nhất) của chính dòng này
+    inner = [r for r in runs if r[0] > 0 and r[1] < len(on)] or runs
+    a, b2 = max(inner, key=lambda r: (r[1] - r[0], prof[r[0]:r[1]].sum()))
+    return (max(0, y0) + b2) * scale
+
+
+def _ocr_missed(page_rect, ocr_img, keep, words, scale, dpi):
+    import cv2
+    H, W = keep.shape
+    cov = np.zeros((H, W), np.uint8)
+    for w in words:
+        x0, y0, x1, y1 = [int(v / scale) for v in w[:4]]
+        cov[max(0, y0):y1 + 1, max(0, x0):x1 + 1] = 1
+    rest = (keep & (ocr_img < 200) & (cov == 0)).astype(np.uint8)
+    if rest.sum() < dpi:
+        return []
+    kx, ky = max(3, int(dpi * 0.10)), max(1, int(dpi * 0.012))
+    blob = cv2.dilate(rest, np.ones((ky, kx), np.uint8))
+    n, _lab, st, _c = cv2.connectedComponentsWithStats(blob, connectivity=8)
+    bl = []
+    for i in range(1, n):
+        x, y, w, h, _a = st[i]
+        if w < dpi * 0.12 or h < dpi * 0.05 or h > dpi * 0.45:
+            continue
+        if rest[y:y + h, x:x + w].sum() < dpi * 0.3:
+            continue
+        bl.append([x, y, x + w, y + h])
+    # các mảnh chưa nhận dạng cùng 1 hàng, cách nhau không xa (phần giữa bị chữ rác che) -> 1 dòng
+    bl.sort(key=lambda b: b[0])
+    mergedb = []
+    for b in bl:
+        for m in mergedb:
+            ov = min(m[3], b[3]) - max(m[1], b[1])
+            if ov > 0.5 * min(m[3] - m[1], b[3] - b[1]) and b[0] - m[2] < dpi * 1.2:
+                m[0], m[1], m[2], m[3] = min(m[0], b[0]), min(m[1], b[1]), max(m[2], b[2]), max(m[3], b[3])
+                break
+        else:
+            mergedb.append(list(b))
+    out = []
+    k = 0
+    for (x, y, x2, y2) in mergedb:
+        w, h = x2 - x, y2 - y
+        if w < dpi * 0.25:
+            continue
+        # cắt cả dòng (mở rộng lên / xuống để lấy đủ chữ bị che một phần)
+        my, mx = int(h * 0.45) + 2, int(dpi * 0.04)
+        Y0, Y1 = max(0, y - my), min(H, y + h + my)
+        X0, X1 = max(0, x - mx), min(W, x + w + mx)
+        crop = np.full((Y1 - Y0 + 2 * mx, X1 - X0 + 2 * mx), 255, np.uint8)
+        crop[mx:mx + Y1 - Y0, mx:mx + X1 - X0] = ocr_img[Y0:Y1, X0:X1]
+        r = fitz.Rect(0, 0, crop.shape[1] * scale, crop.shape[0] * scale)
+        got = [w for w in _ocr_words(r, crop, dpi) if w[4].strip() and _good_word(w[4])]
+        ox, oy = (X0 - mx) * scale, (Y0 - mx) * scale
+        for wd in got:
+            out.append((wd[0] + ox, wd[1] + oy, wd[2] + ox, wd[3] + oy, wd[4], 1000 + k, wd[6], wd[7]))
+        k += 1
+        if k > 40:
+            break
+    return out
+
+
+def _fix_digit_bars(words):
+    """'|' / 'l' / 'I' đứng sát ngay trước chữ số (vd "| 0" của số "10") -> chữ số 1."""
+    out = list(words)
+    i = 0
+    res = []
+    while i < len(out):
+        w = out[i]
+        if w[4] in ("|", "l", "I", "!") and i + 1 < len(out):
+            n = out[i + 1]
+            if n[4][:1].isdigit() and (n[5], n[6]) == (w[5], w[6]) and 0 <= n[0] - w[2] < 0.35 * (n[3] - n[1]):
+                res.append((w[0], min(w[1], n[1]), n[2], max(w[3], n[3]), "1" + n[4]) + tuple(n[5:]))
+                i += 2
+                continue
+        res.append(w)
+        i += 1
+    return res
+
+
+def _fix_numbering(lines, cells):
+    """Cột số thứ tự trong bảng ("1.1", "2.3"...): số bị đọc mất dấu chấm ("11", "22", "42 —") -> "1.1"..."""
+    if not cells:
+        return lines
+    cols = {}
+    for ln in lines:
+        c = ln["bbox"]
+        cx = (c.x0 + c.x1) / 2
+        cols.setdefault(round(cx / 25), []).append(ln)
+    for group in cols.values():
+        nums = [ln for ln in group if re.match(r"^\d{1,2}\.\d{1,2}\.?$", ln["text"].strip())]
+        if len(nums) < 3:
+            continue
+        for ln in group:
+            m = re.match(r"^(\d)(\d)\W*$", ln["text"].strip())
+            if m:
+                ln["text"] = "%s.%s" % (m.group(1), m.group(2))
+    return lines
+
+
+def _dot_leaders(mask, dpi):
+    """Các dòng chấm ".........." trên ảnh: nhiều chấm nhỏ cùng hàng, đều nhau. -> list (x0,y0,x1,y1,[ô chấm])."""
+    import cv2
+    n, _lab, st, _c = cv2.connectedComponentsWithStats(mask.astype(np.uint8), connectivity=8)
+    dmax = max(3, int(dpi * 0.032))        # chấm cỡ <= ~2.3pt
+    dots = []
+    for i in range(1, n):
+        x, y, w, h, a = st[i]
+        if w <= dmax and h <= dmax and a >= 2 and 0.4 <= (w / max(1, h)) <= 2.5:
+            dots.append((x + w / 2.0, y + h / 2.0, x, y, x + w, y + h))
+    dots.sort(key=lambda d: (round(d[1] / 4), d[0]))
+    out, used = [], set()
+    by_row = {}
+    for d in dots:
+        by_row.setdefault(int(d[1] // max(2, dmax)), []).append(d)
+    rows = sorted(by_row)
+    merged = []
+    for r in rows:
+        merged.extend(by_row[r])
+    merged.sort(key=lambda d: (d[1], d[0]))
+    # gom chấm cùng hàng (lệch tâm <= 1/2 cỡ chấm), liên tiếp cách đều
+    groups = []
+    for d in sorted(dots, key=lambda d: d[0]):
+        for g in groups:
+            if abs(g[-1][1] - d[1]) <= dmax * 0.6 and 0 < d[0] - g[-1][0] <= dmax * 6:
+                g.append(d)
+                break
+        else:
+            groups.append([d])
+    for g in groups:
+        if len(g) < 6:
+            continue
+        xs = [d[0] for d in g]
+        gaps = np.diff(xs)
+        if gaps.std() > max(2.0, gaps.mean() * 0.5):
+            continue
+        out.append((min(d[2] for d in g), min(d[3] for d in g), max(d[4] for d in g), max(d[5] for d in g),
+                    [(int(d[2]) - 1, int(d[3]) - 1, int(d[4]) + 2, int(d[5]) + 2) for d in g]))
+    return out
+
+
+def _split_stacked(ch, ink):
+    """1 cụm từ mà các từ trùng nhau theo chiều ngang = thực ra 2 dòng chồng nhau (vd khối ghi chú góc phải
+    "BH theo QĐ số" / "4868/QĐ-BCA-V06" bị bộ nhận dạng gộp) -> tách thành 2 cụm, mỗi cụm 1 dòng."""
+    if ink is None or len(ch) < 2:
+        return [ch]
+    ws_ = sorted(ch, key=lambda w: -(w[2] - w[0]))
+    sets = [[], []]
+    for w in ws_:
+        clash0 = any(min(o[2], w[2]) - max(o[0], w[0]) > 0.3 * min(o[2] - o[0], w[2] - w[0]) for o in sets[0])
+        (sets[1] if clash0 else sets[0]).append(w)
+    if not sets[1]:
+        return [ch]
+    if any(min(o[2], w[2]) - max(o[0], w[0]) > 0.3 * min(o[2] - o[0], w[2] - w[0])
+           for i, o in enumerate(sets[1]) for w in sets[1][i + 1:]):
+        return [ch]                       # chồng 3 lớp trở lên -> không đoán
+    y0, y1 = min(w[1] for w in ch), max(w[3] for w in ch)
+
+    def own(st, other):
+        xr = []
+        for w in st:
+            segs = [(w[0], w[2])]
+            for o in other:
+                nxt = []
+                for a, b in segs:
+                    if o[2] <= a or o[0] >= b:
+                        nxt.append((a, b))
+                    else:
+                        if o[0] > a:
+                            nxt.append((a, o[0]))
+                        if o[2] < b:
+                            nxt.append((o[2], b))
+                segs = nxt
+            xr += [(a, b) for a, b in segs if b - a > 1]
+        return xr
+    c0, c1 = ink(own(sets[0], sets[1]), y0, y1), ink(own(sets[1], sets[0]), y0, y1)
+    if (c0 is None) != (c1 is None):
+        # 1 nhóm nằm lọt trong bề ngang nhóm kia: suy ra từ tâm mực chung của cả vùng
+        cm = ink([(min(w[0] for w in ch), max(w[2] for w in ch))], y0, y1)
+        if cm is None:
+            return [ch]
+        known = c0 if c0 is not None else c1
+        other = 2 * cm - known
+        c0, c1 = (known, other) if c0 is not None else (other, known)
+    if c0 is None or c1 is None or abs(c0 - c1) < 0.2 * (y1 - y0):
+        return [ch]
+    mid = (c0 + c1) / 2
+    up, dn = (sets[0], sets[1]) if c0 < c1 else (sets[1], sets[0])
+    fix = lambda st, a, b: sorted([(w[0], a, w[2], b) + tuple(w[4:]) for w in st], key=lambda w: w[0])
+    return [fix(up, y0, mid), fix(dn, mid, y1)]
+
+
+def _rows_from_ocr(words, cells=None, ink=None):
+    """Từ nhận dạng -> các dòng chữ (dict bbox, text, words):
+    - gom các từ cùng hàng theo toạ độ (1 dòng bị cắt thành nhiều mảnh -> ghép lại đúng thứ tự trái -> phải)
+    - bỏ từ đọc TRÙNG (2 mảnh chồng lên nhau -> giữ mảnh thuộc dòng dài hơn)
+    - bỏ "chữ rác": từ quá thấp (vết gạch chân), hẹp bất thường, hàng chữ lẻ tẻ kẹp giữa 2 dòng thật
+    - chữ ở 2 ô bảng khác nhau không bao giờ chung 1 dòng; tách 2 cột chung 1 hàng khi cách nhau xa"""
+    if not words:
+        return []
+    from collections import Counter
+    src_len = Counter((w[5], w[6]) for w in words)
+    hs = sorted(w[3] - w[1] for w in words)
+    hmed = hs[len(hs) // 2]
+    ws = [w for w in words if (w[3] - w[1]) >= 0.45 * hmed           # vết gạch chân / nét lẻ bị đọc thành chữ
+          and (w[2] - w[0]) >= _min_width(w[4], min(w[3] - w[1], hmed))]   # "chữ" hẹp bất thường
+    # bỏ từ đọc TRÙNG chỗ (chồng quá nửa theo cả 2 chiều, với cả 2 từ) -> giữ từ thuộc dòng dài hơn
+    ws.sort(key=lambda w: -src_len[(w[5], w[6])])
+    kept = []
+    for w in ws:
+        dup = False
+        for k in kept:
+            ox = min(k[2], w[2]) - max(k[0], w[0])
+            oy = min(k[3], w[3]) - max(k[1], w[1])
+            if ox > 0.5 * (w[2] - w[0]) and ox > 0.5 * (k[2] - k[0]) and oy > 0.5 * min(w[3] - w[1], k[3] - k[1]):
+                dup = True
+                break
+        if not dup:
+            kept.append(w)
+    ws = kept
+    cells = cells or []
+
+    def cell_of(w):
+        cx, cy = (w[0] + w[2]) / 2, (w[1] + w[3]) / 2
+        best = -1
+        for i, c in enumerate(cells):
+            if c.x0 <= cx <= c.x1 and c.y0 <= cy <= c.y1 and (best < 0 or c.get_area() < cells[best].get_area()):
+                best = i
+        return best
+
+    # gom hàng: cùng 1 dòng của bộ nhận dạng -> cùng hàng; các mảnh khác -> cùng hàng nếu tâm gần như trùng
+    rows = []
+    for w in sorted(ws, key=lambda w: ((w[1] + w[3]) / 2, w[0])):
+        cy, h = (w[1] + w[3]) / 2, w[3] - w[1]
+        ci = cell_of(w)
+        best = None
+        for r in rows:
+            if r["cell"] != ci:
+                continue
+            if (w[5], w[6]) in r["src"] or abs(cy - r["cy"]) < 0.15 * max(h, r["y1"] - r["y0"]):
+                best = r
+                break
+        if best is None:
+            rows.append({"y0": w[1], "y1": w[3], "cy": cy, "w": [w], "cell": ci, "src": {(w[5], w[6])}})
+        else:
+            best["w"].append(w)
+            best["src"].add((w[5], w[6]))
+            best["y0"], best["y1"] = min(best["y0"], w[1]), max(best["y1"], w[3])
+            n = len(best["w"])
+            best["cy"] = (best["cy"] * (n - 1) + cy) / n
+    # hàng chỉ toàn mảnh 1-3 ký tự, kẹp giữa 2 hàng chữ thật cùng ô (chồng lên cả trên lẫn dưới) -> rác
+    def wl(w):         # số chữ / số trong 1 từ (bỏ dấu câu)
+        return sum(1 for c in w[4] if c.isalnum())
+
+    def real(r):       # hàng chữ thật: có từ dài, hoặc nhiều từ 2+ chữ
+        return any(wl(w) >= 4 for w in r["w"]) or sum(1 for w in r["w"] if wl(w) >= 2) >= 3
+    drop = set()
+    for i, r in enumerate(rows):
+        if real(r) or any(wl(w) > 3 for w in r["w"]):
+            continue
+        h = r["y1"] - r["y0"]
+        up = any(o is not r and o["cell"] == r["cell"] and real(o) and o["y0"] < r["y0"]
+                 and min(o["y1"], r["y1"]) - max(o["y0"], r["y0"]) > 0.25 * h for o in rows)
+        dn = any(o is not r and o["cell"] == r["cell"] and real(o) and o["y1"] > r["y1"]
+                 and min(o["y1"], r["y1"]) - max(o["y0"], r["y0"]) > 0.25 * h for o in rows)
+        if up and dn:
+            drop.add(i)
+    out = []
+    for i, r in enumerate(rows):
+        if i in drop:
+            continue
+        rw = sorted(r["w"], key=lambda w: w[0])
+        chunks, cur = [], [rw[0]]
+        for w in rw[1:]:
+            hgt = max(1.0, max(cur[-1][3] - cur[-1][1], w[3] - w[1]))
+            if w[0] - cur[-1][2] > hgt * 2.2:
+                chunks.append(cur)
+                cur = [w]
+            else:
+                cur.append(w)
+        chunks.append(cur)
+        chunks = [c2 for c in chunks for c2 in _split_stacked(c, ink)]
+        for ch in chunks:
+            text = " ".join(w[4] for w in ch)
+            core = [c for c in text if not c.isspace()]
+            if not any(c.isalnum() for c in core) and not (len(core) >= 3 and set(core) <= set(".…")):
+                continue
+            x0 = min(w[0] for w in ch); y0 = min(w[1] for w in ch)
+            x1 = max(w[2] for w in ch); y1 = max(w[3] for w in ch)
+            out.append({"bbox": fitz.Rect(x0, y0, x1, y1), "text": text, "words": ch})
+    out.sort(key=lambda l: (l["bbox"].y0, l["bbox"].x0))
+    return out
+
+
 def analyze(page, dpi=OCR_DPI, keep_text=False):
     """-> dict(lines=[...như convert._page_lines...], tables=[ScanTable], segs=(hs,vs), pieces=[(rect,png)])"""
     import cv2
@@ -415,42 +743,66 @@ def analyze(page, dpi=OCR_DPI, keep_text=False):
     k = max(3, int(dpi * 0.012)) | 1
     tm_big = cv2.dilate(tmask.astype(np.uint8), np.ones((k, k), np.uint8)) > 0   # xoá cả vết kẻ bảng
     keep = dark & ~tm_big & ~(cv2.dilate(color.astype(np.uint8), np.ones((3, 3), np.uint8)) > 0)
-    ocr_img = np.full(gray.shape, 255, np.uint8)
-    ocr_img[keep] = np.minimum(gray[keep], 90)
+    # gạch chân / gạch ngang ngoài bảng (dưới Quốc hiệu, dưới tên văn bản) làm bộ nhận dạng đọc sai cả dòng
+    # -> bỏ khỏi ảnh nhận dạng (vẫn giữ trên trang dưới dạng hình)
+    ul = cv2.dilate(hor.astype(np.uint8), np.ones((3, 3), np.uint8)) > 0
+    keep_ocr = keep & ~ul
+    if os.environ.get("SUAPDF_PREP") == "gray":
+        ocr_img = gray.copy()
+        ocr_img[tm_big] = 255
+    else:
+        ocr_img = np.full(gray.shape, 255, np.uint8)
+        ocr_img[keep_ocr] = np.minimum(gray[keep_ocr], 90)
+    # dòng chấm "............" (chỗ điền) làm bộ nhận dạng đọc hỏng cả dòng -> xoá khỏi ảnh nhận dạng,
+    # nhận dạng xong thì thêm lại thành chữ "....." đúng chỗ
+    leaders = _dot_leaders(keep, dpi)
+    for (x0, y0, x1, y1, comps) in leaders:
+        for (cx0, cy0, cx1, cy1) in comps:
+            ocr_img[cy0:cy1, cx0:cx1] = 255
     words = _ocr_words(page.rect, ocr_img)
+    words = _fix_digit_bars(words)
     words = [w for w in words if w[4].strip() and _good_word(w[4])]
+    # bộ nhận dạng đôi khi BỎ SÓT cả dòng (dòng sát nhau, có gạch chân...) -> tìm vùng mực chữ chưa được
+    # nhận dạng, cắt riêng từng dòng đó ra nhận dạng lại
+    try:
+        if os.environ.get("SUAPDF_MISS") == "1":      # (thử nghiệm, mặc định tắt)
+            words += _ocr_missed(page.rect, ocr_img, keep_ocr, words, scale, dpi)
+    except Exception:
+        pass
+    if leaders:
+        hs_ = sorted(w[3] - w[1] for w in words) or [12.0]
+        hmed_ = hs_[len(hs_) // 2]
+        for k, (x0, y0, x1, y1, comps) in enumerate(leaders):
+            X0, X1, Y = x0 * scale, x1 * scale, y1 * scale
+            n = max(3, int(round((X1 - X0) / (0.25 * hmed_ / 1.13))))
+            words.append((X0, Y - hmed_ * 0.78, X1, Y + hmed_ * 0.22, "." * n, -1, k, 0))
     # bỏ "chữ" 1 ký tự nằm sát đường kẻ dọc của bảng (vết kẻ bị đọc thành i, l, |)
     vxs = [x for (_a, _b, x, _w) in segs[1]]
     words = [w for w in words if not (len(w[4]) <= 2 and w[4] in ("i", "l", "I", "|", "!", "1", "ỉ", "ì", "í", "ii", "li", "il")
-                                      and any(abs((w[0] + w[2]) / 2 - x) < 4 for x in vxs))]
-    # ---- ghép từ thành dòng
-    from collections import OrderedDict
-    groups = OrderedDict()
-    for w in words:
-        groups.setdefault((w[5], w[6]), []).append(w)
-    lines = []
-    sizes = []
-    for ws in groups.values():
-        ws.sort(key=lambda w: w[0])
-        # tách dòng nếu 2 từ cách nhau quá xa (2 cột khác nhau bị OCR gộp)
-        chunks, cur = [], [ws[0]]
-        for w in ws[1:]:
-            hgt = max(1.0, cur[-1][3] - cur[-1][1])
-            if w[0] - cur[-1][2] > hgt * 2.2:
-                chunks.append(cur)
-                cur = [w]
-            else:
-                cur.append(w)
-        chunks.append(cur)
-        for ch in chunks:
-            x0 = min(w[0] for w in ch); y0 = min(w[1] for w in ch)
-            x1 = max(w[2] for w in ch); y1 = max(w[3] for w in ch)
-            text = " ".join(w[4] for w in ch)
-            lines.append({"bbox": fitz.Rect(x0, y0, x1, y1), "text": text, "words": ch})
-            sizes.append((y1 - y0) / 1.13)
+                                      and any(abs((w[0] + w[2]) / 2 - x) < 2.5 for x in vxs))]
+    # ---- ghép từ thành dòng THEO VỊ TRÍ THẬT trên trang (không theo cách chia dòng của bộ nhận dạng,
+    #      vốn hay cắt 1 dòng thành nhiều mảnh / đọc trùng / sinh "chữ rác" giữa 2 dòng sát nhau)
+    def ink_cy(xr, y0, y1):
+        """Tâm theo chiều dọc của mực chữ trong các khoảng x (toạ độ trang), giữa y0..y1."""
+        Y0, Y1 = max(0, int(y0 / scale)), int(y1 / scale) + 1
+        tot = np.zeros(max(1, Y1 - Y0))
+        for a, b in xr:
+            sub = keep_ocr[Y0:Y1, max(0, int(a / scale)):int(b / scale) + 1]
+            if sub.size:
+                tot[:sub.shape[0]] += sub.sum(axis=1)
+        if tot.sum() <= 0:
+            return None
+        return (Y0 + (np.arange(len(tot)) * tot).sum() / tot.sum()) * scale
+
+    lines = _rows_from_ocr(words, [fitz.Rect(c) for t in tables for c in t.cells if c], ink_cy)
+    lines = _fix_numbering(lines, [c for t in tables for c in t.cells if c])
+    sizes = [(ln["bbox"].y1 - ln["bbox"].y0) / 1.13 for ln in lines]
     # ---- cỡ chữ: đo chiều cao phần thân chữ (x-height / chiều cao chữ hoa) trên ảnh
     def measure(ln):
         b = ln["bbox"]
+        real_w = [w for w in ln["words"] if not set(w[4]) <= set(".…")]
+        if real_w and len(real_w) < len(ln["words"]):      # bỏ dòng chấm "....." khi đo nét chữ
+            b = fitz.Rect(min(w[0] for w in real_w), b.y0, max(w[2] for w in real_w), b.y1)
         y0, y1 = int(b.y0 / scale), int(b.y1 / scale) + 1
         x0, x1 = int(b.x0 / scale), int(b.x1 / scale) + 1
         sub = keep[y0:y1, x0:x1]
@@ -480,12 +832,13 @@ def analyze(page, dpi=OCR_DPI, keep_text=False):
     smed0 = float(np.median(strokes0)) if strokes0 else 0.0
     new = []
     for ln, (sz, st) in zip(lines, meas):
-        isbold = bool(st and smed0 and st > max(smed0 * 1.30, 0.105))
+        isbold = bool(st and smed0 and st > max(smed0 * 1.15, 0.125))
         f = fonts.get("bold" if isbold else "regular") if fonts else None
         if f is not None:
-            wpx = sum(w[2] - w[0] for w in ln["words"])
-            wun = sum(f.text_length(w[4], 1.0) for w in ln["words"])
-            if wun > 0 and sum(len(w[4]) for w in ln["words"]) >= 3:
+            # bề rộng CẢ DÒNG so với bề rộng chữ mẫu (khung từng từ của bộ nhận dạng có thể sai, cả dòng thì đúng)
+            wpx = ln["bbox"].width
+            wun = f.text_length(" ".join(w[4] for w in ln["words"]), 1.0)
+            if wun > 0 and sum(len(w[4]) for w in ln["words"]) >= 5:
                 sz = wpx / wun
             else:
                 sz = None      # quá ngắn (vd số "12") -> dùng cỡ chữ phổ biến của trang
@@ -502,14 +855,18 @@ def analyze(page, dpi=OCR_DPI, keep_text=False):
             v = med
         if abs(v - med) < 1.3:
             v = med
-        return min(std, key=lambda x: abs(x - v))
+        # làm tròn XUỐNG cỡ chuẩn gần nhất (tròn lên dễ làm dòng dài hơn bản gốc -> bị xuống dòng, chạy chữ)
+        c = [x for x in std if x <= v + 0.2]
+        return c[-1] if c else std[0]
 
     out = []
     for ln, (sz, st) in zip(lines, meas):
         b = ln["bbox"]
         size = norm_size(sz)
-        bold = bool(st and smed and st > max(smed * 1.30, 0.105))
-        base = b.y1 - 0.20 * size
+        bold = bool(st and smed and st > max(smed * 1.15, 0.125))
+        base = _baseline(keep, b, scale)
+        if base is None or not (b.y0 + 0.4 * (b.y1 - b.y0) <= base <= b.y1 + 1):
+            base = b.y1 - 0.20 * size
         span = {"text": _fix_tokens(ln["text"]), "bbox": tuple(b), "origin": (b.x0, base), "size": size,
                 "font": "Times New Roman" + ("-Bold" if bold else ""), "flags": 16 if bold else 0,
                 "color": 0, "ascender": 0.891, "descender": -0.216, "alpha": 255}
