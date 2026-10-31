@@ -46,6 +46,16 @@ jobs:
           $len = (Get-Item $f).Length
           Write-Host "vie.traineddata: $len bytes"
           if ($len -lt 1000000) { Write-Error "Khong tai duoc vie.traineddata"; exit 1 }
+          # bản nhận dạng NHANH (fast) – dùng mặc định, nhanh gấp 3-4 lần
+          New-Item -ItemType Directory -Force -Path tessdata\fast | Out-Null
+          $ff = "tessdata\fast\vie.traineddata"
+          foreach ($u in @("https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/main/vie.traineddata",
+                           "https://github.com/tesseract-ocr/tessdata_fast/raw/main/vie.traineddata")) {
+            if ((Test-Path $ff) -and ((Get-Item $ff).Length -gt 300000)) { break }
+            try { Invoke-WebRequest -Uri $u -OutFile $ff -UseBasicParsing } catch { Write-Host $_ }
+          }
+          if ((Test-Path $ff) -and ((Get-Item $ff).Length -gt 300000)) { Write-Host "fast: $((Get-Item $ff).Length) bytes" }
+          else { Remove-Item $ff -ErrorAction SilentlyContinue; Write-Host "Khong tai duoc ban fast - dung ban best" }
           "TESSDATA_PREFIX=$((Resolve-Path tessdata).Path)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Kiem tra ma nguon (chay thu loi xu ly PDF)
@@ -61,7 +71,7 @@ jobs:
           pyinstaller --noconfirm --clean --onefile --windowed
           --name SuaPDF --icon icon.ico
           --collect-submodules pdf2docx
-          --hidden-import selftest --hidden-import convert --hidden-import wordnative --hidden-import splitter --hidden-import glyphfix --hidden-import ocrpage --hidden-import vlines
+          --hidden-import selftest --hidden-import convert --hidden-import wordnative --hidden-import splitter --hidden-import glyphfix --hidden-import ocrpage --hidden-import vlines --hidden-import merger --hidden-import legacy
           --add-data "tessdata;tessdata"
           --hidden-import win32com.client --hidden-import pythoncom --hidden-import openpyxl
           --exclude-module tkinter --exclude-module matplotlib
