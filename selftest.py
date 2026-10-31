@@ -2,6 +2,7 @@
 """Tự kiểm tra (chạy: SuaPDF.exe --selftest <thư_mục>) – dùng trong GitHub Actions.
 Ghi từng bước ra màn hình + file selftest.log để biết chính xác lỗi ở đâu."""
 import os
+import re
 import sys
 import traceback
 
@@ -416,7 +417,11 @@ def run(out_dir):
         z = zipfile.ZipFile(dst)
         x = "".join(z.read(n).decode("utf-8") for n in z.namelist() if n.startswith("word/") and n.endswith(".xml"))
         log("    trang chu that + anh chua chu -> Word: %s" % ("TIÊU ĐỀ" in x and "Dòng nội dung" in x))
-        assert "TIÊU ĐỀ CHỮ THẬT" in x and "Dòng nội dung số 5" in x
+        # (font Times New Roman của Windows đọc dấu cách thành \xa0; chữ nhận dạng có thể sai 1-2 dấu)
+        flat = " ".join(re.sub(r"<[^>]+>", " ", x).replace("\xa0", " ").split())
+        assert "TIÊU ĐỀ CHỮ THẬT" in flat, "mat chu that"
+        n_ok = sum(1 for k in range(1, 9) if ("số %d" % k) in flat or ("sô %d" % k) in flat)
+        assert "nội dung" in flat and n_ok >= 6, "chu trong anh chua duoc nhan dang (%d/8 dong)" % n_ok
 
     step("Trang PDF co anh chua chu -> Word chu go duoc, khong khung anh", mixed_page_check)
 
