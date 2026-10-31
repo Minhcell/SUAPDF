@@ -76,6 +76,11 @@ Bấm nút **Chuyển đổi** → chọn kiểu → thêm file (chọn nhiều 
   giống cách soạn công văn trong Word; chữ ký, con dấu nằm dưới chữ nên bấm vào chữ để sửa không bị vướng ảnh.
 - Sau khi chuyển sang PDF có nút **"Mở PDF vừa tạo để sửa"**.
 
+## PDF có phần nội dung là ảnh chứa chữ
+Trang PDF có chữ thật (tiêu đề...) nhưng phần thân là ẢNH scan dán vào: khi chuyển sang **Word / Excel** phần mềm tự
+nhận dạng chữ trong ảnh → ra chữ gõ được, **không còn khung ảnh**; chữ thật giữ nguyên (đúng đậm / nghiêng theo font
+nhúng). Bản scan cũng chuyển sang Excel thành ô chữ, bảng thành ô Excel.
+
 ## Tốc độ chuyển PDF → Word
 File nhiều trang chuyển nhanh hơn trước khoảng 2–3 lần; bản scan dùng bộ nhận dạng chữ nhanh và **chạy song song
 trên nhiều nhân CPU** (máy 4 nhân: file scan 50 trang nhanh hơn ~8–10 lần so với bản cũ).

@@ -225,6 +225,66 @@ _NORM = {0x00AD: "-", 0x2010: "-", 0x2011: "-", 0x2012: "-", 0x2212: "-",
          0x0000: None, 0xFFFD: None}  # ký tự hỏng (ô vuông) -> bỏ, để gõ lại
 
 
+_STYLE_CACHE = {}
+
+
+def font_styles(page):
+    """Kiểu chữ (đậm, nghiêng) đọc từ CHÍNH file font nhúng trong PDF – dùng khi tên font bị đặt "giả"
+    (CIDFont+F1...) nên không biết đậm / nghiêng. -> {tên font: (đậm, nghiêng)}"""
+    doc = page.parent
+    key = id(doc)
+    cache = _STYLE_CACHE.setdefault(key, {})
+    try:
+        fonts = page.get_fonts(full=True)
+    except Exception:
+        return cache
+    for f in fonts:
+        xref, name = f[0], f[3]
+        if name in cache:
+            continue
+        cache[name] = (False, False)
+        try:
+            _b, _e, _t, buf = doc.extract_font(xref)
+            if not buf:
+                continue
+            import io
+            from fontTools.ttLib import TTFont
+            t = TTFont(io.BytesIO(buf), lazy=True)
+            ms = t["head"].macStyle
+            bold, ital = bool(ms & 1), bool(ms & 2)
+            if "OS/2" in t:
+                fs = t["OS/2"].fsSelection
+                bold = bold or bool(fs & 32) or t["OS/2"].usWeightClass >= 600
+                ital = ital or bool(fs & 1)
+            if "post" in t and abs(t["post"].italicAngle) > 1:
+                ital = True
+            cache[name] = (bold, ital)
+        except Exception:
+            pass
+    return cache
+
+
+def apply_font_styles(page, dd):
+    """Bổ sung cờ đậm (16) / nghiêng (2) cho các đoạn chữ theo kiểu thật của font nhúng."""
+    try:
+        st = font_styles(page)
+        if not st:
+            return
+        for b in dd.get("blocks", []):
+            for ln in b.get("lines", []):
+                for sp in ln.get("spans", []):
+                    bi = st.get(sp.get("font", ""))
+                    if bi:
+                        fl = sp.get("flags", 0)
+                        if bi[0]:
+                            fl |= 16
+                        if bi[1]:
+                            fl |= 2
+                        sp["flags"] = fl
+    except Exception:
+        pass
+
+
 def _legacy_fix(dd):
     """Chữ mã cũ (TCVN3 .VnTime / VNI-Times) -> Unicode."""
     try:
@@ -242,6 +302,9 @@ def clean_font_name(name):
     """'ABCDEF+TimesNewRomanPS-BoldMT' -> 'Times New Roman'"""
     n = name.split("+")[-1]
     n = re.split(r"[-,]", n)[0]
+    # tên font "giả" do phần mềm xuất PDF đặt (CIDFont+F1, F2, T1_0, TT3...) -> font mặc định Times New Roman
+    if re.match(r"^(CIDFont|Font|F|T|TT|C|R)?\d*(_\d+)?$", n, re.I) or n.lower() in ("cidfont", "font"):
+        return DEFAULT_FAMILY
     n = re.sub(r"(PSMT|PS|MT)$", "", n)
     known = {"TimesNewRoman": "Times New Roman", "Times": "Times New Roman",
              "LiberationSerif": "Times New Roman", "ArialMT": "Arial",
@@ -380,6 +443,7 @@ class PdfDocument:
             page = self.doc[pno]
             flags = fitz.TEXT_PRESERVE_WHITESPACE | fitz.TEXT_PRESERVE_LIGATURES | getattr(fitz, "TEXT_MEDIABOX_CLIP", 0)
             d = page.get_text("dict", flags=flags)
+            apply_font_styles(page, d)
             _legacy_fix(d)
             out = []
             for b in d["blocks"]:

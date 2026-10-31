@@ -79,6 +79,7 @@ def _page_lines(page):
     rot = page.rotation_matrix
     rot0 = fitz.Matrix(rot.a, rot.b, rot.c, rot.d, 0, 0)
     dd = page.get_text("rawdict", flags=fitz.TEXT_PRESERVE_WHITESPACE | fitz.TEXT_PRESERVE_LIGATURES)
+    core.apply_font_styles(page, dd)     # đậm / nghiêng theo font nhúng (tên font "giả" CIDFont+F1...)
     core._legacy_fix(dd)     # chữ .VnTime / VNI-Times -> Unicode
     # sửa chữ bị font khai báo sai mã (vd "Trảng" đọc ra "Trdng") – so hình chữ thật trên trang
     try:
@@ -227,6 +228,25 @@ def _graphics_layer(doc, pno, lines, tables, dpi, keep_inner=False):
     return pieces
 
 
+def _ocr_scan(page):
+    """Nhận dạng chữ cho trang scan / lớp chữ hỏng / trang có ảnh chứa chữ. None nếu là trang chữ thường."""
+    try:
+        import ocrpage
+        if not ocrpage.ocr_available():
+            return None
+        if ocrpage.is_scanned(page):
+            return ocrpage.analyze(page)
+        if ocrpage.page_text_broken(page):
+            return ocrpage.analyze(page, keep_text=True)
+        if ocrpage.image_text_page(page):
+            r = ocrpage.analyze(page)
+            r["mixed"] = True
+            return r
+    except Exception:
+        return None
+    return None
+
+
 def pdf_to_excel(doc, out, dpi=200, progress=None):
     """doc: fitz.Document. Mỗi trang PDF -> 1 trang tính, bố cục như bản gốc."""
     from openpyxl import Workbook
@@ -248,13 +268,21 @@ def pdf_to_excel(doc, out, dpi=200, progress=None):
         ws = wb.create_sheet("Trang %d" % (pno + 1))
         ws.sheet_view.showGridLines = False
 
-        lines = _page_lines(page)
-        try:
-            tables = [t for t in page.find_tables().tables if t.row_count and t.col_count]
-        except Exception:
-            tables = []
+        # trang SCAN / lớp chữ hỏng / chữ nằm trong ẢNH -> nhận dạng chữ để thành ô Excel gõ được
+        scan = _ocr_scan(page)
+        if scan is not None:
+            lines = list(scan["lines"])
+            if scan.get("mixed"):
+                lines += _page_lines(page)
+            tables = scan["tables"]
+        else:
+            lines = _page_lines(page)
+            try:
+                tables = [t for t in page.find_tables().tables if t.row_count and t.col_count]
+            except Exception:
+                tables = []
         # các ô bảng (toạ độ hiển thị)
-        rot = page.rotation_matrix
+        rot = page.rotation_matrix if scan is None else fitz.Identity
         cells = []  # (rect, table_index)
         for ti, t in enumerate(tables):
             for c in t.cells:
@@ -392,14 +420,21 @@ def pdf_to_excel(doc, out, dpi=200, progress=None):
         # ---- chữ tự do: đặt đúng toạ độ, không gộp ô -> chữ tràn sang ô trống như Excel thường
         for ln in sorted(free, key=lambda l: (l["bbox"].y0, l["bbox"].x0)):
             g = ln["grow"]
-            r0 = _nearest(ys, g["top"])
-            r1 = max(_nearest(ys, g["bot"]), r0 + 1)
+            hh = max(1.0, g["bot"] - g["top"])
+            # co nhẹ trên/dưới: 2 dòng sát nhau không tranh cùng 1 hàng Excel (tránh ô gộp che chữ dòng kia)
+            r0 = _nearest(ys, g["top"] + 0.15 * hh)
+            r1 = max(_nearest(ys, g["bot"] - 0.15 * hh), r0 + 1)
             c0 = _nearest(xs, ln["bbox"].x0)
             if used[r0][c0]:
                 cell = ws.cell(r0 + 1, c0 + 1)
                 cell.value = ("%s %s" % (cell.value or "", _line_text(ln))).strip()
                 continue
-            if r1 - r0 > 1 and free_area(r0, r1, c0, c0 + 1):
+            # ô gộp KHÔNG cho chữ tràn sang bên -> gộp đủ rộng tới hết chữ (nếu chỗ đó trống), tránh bị cắt chữ
+            c1 = max(_nearest(xs, ln["bbox"].x1 + 2), c0 + 1)
+            if r1 - r0 > 1 and free_area(r0, r1, c0, c1):
+                ws.merge_cells(start_row=r0 + 1, start_column=c0 + 1, end_row=r1, end_column=c1)
+                occupy(r0, r1, c0, c1)
+            elif r1 - r0 > 1 and free_area(r0, r1, c0, c0 + 1) and c1 == c0 + 1:
                 ws.merge_cells(start_row=r0 + 1, start_column=c0 + 1, end_row=r1, end_column=c0 + 1)
                 occupy(r0, r1, c0, c0 + 1)
             else:
@@ -413,7 +448,8 @@ def pdf_to_excel(doc, out, dpi=200, progress=None):
         # ---- chữ ký, con dấu, logo... thành ảnh đặt đúng chỗ
         max_x = max([r.x1 for r, _ in cells] + [l["bbox"].x1 for l in lines] + [1.0])
         max_y = max([r.y1 for r, _ in cells] + [l["bbox"].y1 for l in lines] + [1.0])
-        for rect, png in _graphics_layer(doc, pno, lines, tables, dpi):
+        pieces = scan["pieces"] if scan is not None else _graphics_layer(doc, pno, lines, tables, dpi)
+        for rect, png in pieces:
             max_x, max_y = max(max_x, rect.x1), max(max_y, rect.y1)
             img = XLImage(io.BytesIO(png))
             ci = max(0, bisect.bisect_right(xs, rect.x0) - 1)

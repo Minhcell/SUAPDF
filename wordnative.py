@@ -645,6 +645,7 @@ def pdf_to_docx(doc, out, dpi=200, progress=None, ocr=True):
     # ---- trang SCAN (ảnh) / lớp chữ hỏng: nhận dạng chữ tiếng Việt offline cho MỌI trang trước,
     #      chạy song song nhiều nhân CPU (file scan vài chục trang nhanh hơn nhiều)
     scans = {}
+    mixed = set()
     if ocr:
         try:
             import ocrpage
@@ -657,6 +658,10 @@ def pdf_to_docx(doc, out, dpi=200, progress=None, ocr=True):
                     elif ocrpage.page_text_broken(pg):
                         # chữ hiện bình thường nhưng lớp chữ hỏng -> nhận dạng lại từ hình chữ
                         jobs.append((pno, True))
+                    elif ocrpage.image_text_page(pg):
+                        # chữ thật + phần nội dung là ẢNH chứa chữ -> nhận dạng chữ trong ảnh, giữ chữ thật
+                        jobs.append((pno, False))
+                        mixed.add(pno)
                 if jobs:
                     scans = ocrpage.analyze_many(
                         doc, jobs, (lambda a, b: progress(min(n - 1, int(a * n * 0.85 / b)), n)) if progress else None)
@@ -670,6 +675,12 @@ def pdf_to_docx(doc, out, dpi=200, progress=None, ocr=True):
         if scan is not None:
             rot = fitz.Identity          # toạ độ OCR đã là toạ độ hiển thị
             raw_lines = scan["lines"]
+            if pno in mixed:
+                # chữ thật của trang (ngoài ảnh) giữ nguyên, ghép cùng chữ nhận dạng trong ảnh
+                try:
+                    raw_lines = list(raw_lines) + convert._page_lines(page)
+                except Exception:
+                    pass
         else:
             raw_lines = convert._page_lines(page)
         if scan is not None:

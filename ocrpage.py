@@ -319,7 +319,7 @@ def _tables(hor, ver, scale, dpi):
 # =============================================================================
 #  OCR
 # =============================================================================
-def _ocr_words(page_rect, img_gray, dpi=None):
+def _ocr_words(page_rect, img_gray, dpi=None, tessdir=None):
     """OCR ảnh (đã xoá kẻ bảng + phần màu). Trả về list từ (x0,y0,x1,y1,text,block,line,word)."""
     d = fitz.open()
     p = d.new_page(width=page_rect.width, height=page_rect.height)
@@ -327,7 +327,7 @@ def _ocr_words(page_rect, img_gray, dpi=None):
     bio = io.BytesIO()
     Image.fromarray(img_gray).save(bio, "PNG")
     p.insert_image(p.rect, stream=bio.getvalue())
-    tp = p.get_textpage_ocr(language="vie", dpi=dpi or OCR_DPI, full=True, tessdata=ocr_dir())
+    tp = p.get_textpage_ocr(language="vie", dpi=dpi or OCR_DPI, full=True, tessdata=tessdir or ocr_dir())
     # Tự tách từ theo khoảng trống THẬT giữa các chữ (thư viện hay bỏ sót dấu cách sau chữ có dấu,
     # vd "Kếhoạch", "Sốlượng")
     raw = p.get_text("rawdict", textpage=tp)
@@ -367,8 +367,11 @@ _PUNCT = set("-–—.,;:/()+*%\"'“”‘’…!?")
 def _good_word(t):
     if t and all(ch in _PUNCT for ch in t) and len(t) <= 3:
         return True                      # dấu gạch, chấm, phẩy... đứng riêng
-    al = sum(ch.isalnum() for ch in t)
-    return al >= 1 and al >= len(t) * 0.5
+    if t and set(t) <= set(".…") :
+        return True                      # dòng chấm "......" (chỗ điền)
+    core = t.strip(".…").strip("()[]:;,")   # "có:...", "(1)...", "...(4)..." -> bỏ dấu chấm điền, ngoặc khi xét
+    al = sum(ch.isalnum() for ch in core)
+    return al >= 1 and al >= max(1, len(core)) * 0.5
 
 
 _LOW = "a-zàáảãạăằắẳẵặâầấẩẫậđèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵ"
@@ -410,6 +413,28 @@ _NARROW_OK = set("1lIi|!.,:;'`-()[]/\\")
 def _min_width(text, h):
     """Bề rộng tối thiểu hợp lý của 1 từ cao h (chữ hẹp như l, i, 1 tính ít hơn)."""
     return h * sum(0.08 if c in _NARROW_OK else 0.2 for c in text if not c.isspace())
+
+
+def _is_italic(mask, b, scale):
+    """Chữ nghiêng: nét dọc của chữ thẳng hàng nhất khi "dựng" ảnh nghiêng ~12° (so với giữ nguyên)."""
+    try:
+        y0, y1 = int(b.y0 / scale), int(b.y1 / scale) + 1
+        x0, x1 = int(b.x0 / scale), int(b.x1 / scale) + 1
+        sub = mask[max(0, y0):y1, max(0, x0):x1].astype(np.float32)
+        h, w = sub.shape
+        if h < 8 or w < 3 * h or sub.sum() < 50:
+            return False
+
+        def sharp(k):
+            acc = np.zeros(w + h, np.float32)
+            for r in range(h):
+                off = int(round(r * k))                  # dời hàng dưới sang phải = dựng chữ nghiêng đứng lại
+                acc[off:off + w] += sub[r]
+            return float((acc ** 2).sum())
+        s0, s1 = sharp(0.0), sharp(0.21)
+        return s1 > s0 * 1.12
+    except Exception:
+        return False
 
 
 def _baseline(mask, b, scale):
@@ -558,13 +583,13 @@ def _dot_leaders(mask, dpi):
     groups = []
     for d in sorted(dots, key=lambda d: d[0]):
         for g in groups:
-            if abs(g[-1][1] - d[1]) <= dmax * 0.6 and 0 < d[0] - g[-1][0] <= dmax * 6:
+            if abs(g[-1][1] - d[1]) <= dmax * 0.6 and 0 < d[0] - g[-1][0] <= dmax * 3.2:
                 g.append(d)
                 break
         else:
             groups.append([d])
     for g in groups:
-        if len(g) < 6:
+        if len(g) < 8:          # dòng chấm dài; ". . ." ngắn để bộ nhận dạng tự đọc
             continue
         xs = [d[0] for d in g]
         gaps = np.diff(xs)
@@ -638,7 +663,8 @@ def _rows_from_ocr(words, cells=None, ink=None):
     src_len = Counter((w[5], w[6]) for w in words)
     hs = sorted(w[3] - w[1] for w in words)
     hmed = hs[len(hs) // 2]
-    ws = [w for w in words if (w[3] - w[1]) >= 0.45 * hmed           # vết gạch chân / nét lẻ bị đọc thành chữ
+    ws = [w for w in words if ((w[3] - w[1]) >= 0.45 * hmed          # vết gạch chân / nét lẻ bị đọc thành chữ
+                               or (sum(c.isalpha() for c in w[4]) >= 3 and vn_score(w[4]) >= 1.0))
           and (w[2] - w[0]) >= _min_width(w[4], min(w[3] - w[1], hmed))]   # "chữ" hẹp bất thường
     # bỏ từ đọc TRÙNG chỗ (chồng quá nửa theo cả 2 chiều, với cả 2 từ) -> giữ từ thuộc dòng dài hơn
     ws.sort(key=lambda w: -src_len[(w[5], w[6])])
@@ -761,6 +787,10 @@ def analyze(page, dpi=OCR_DPI, keep_text=False):
             ocr_img[cy0:cy1, cx0:cx1] = 255
     words = _ocr_words(page.rect, ocr_img)
     words = _fix_digit_bars(words)
+    try:
+        words = _reocr_bad_lines(words, ocr_img, scale, dpi)
+    except Exception:
+        pass
     words = [w for w in words if w[4].strip() and _good_word(w[4])]
     # bộ nhận dạng đôi khi BỎ SÓT cả dòng (dòng sát nhau, có gạch chân...) -> tìm vùng mực chữ chưa được
     # nhận dạng, cắt riêng từng dòng đó ra nhận dạng lại
@@ -836,8 +866,16 @@ def analyze(page, dpi=OCR_DPI, keep_text=False):
         f = fonts.get("bold" if isbold else "regular") if fonts else None
         if f is not None:
             # bề rộng CẢ DÒNG so với bề rộng chữ mẫu (khung từng từ của bộ nhận dạng có thể sai, cả dòng thì đúng)
-            wpx = ln["bbox"].width
-            wun = f.text_length(" ".join(w[4] for w in ln["words"]), 1.0)
+            plain = [w for w in ln["words"] if ".." not in w[4] and "…" not in w[4]]
+            if len(plain) == len(ln["words"]):
+                wpx = ln["bbox"].width
+                wun = f.text_length(" ".join(w[4] for w in ln["words"]), 1.0)
+            else:
+                # dòng có chỗ điền ". . ." (in giãn cách, rộng hơn "..." gõ máy) -> chỉ đo các từ thường
+                wpx = sum(w[2] - w[0] for w in plain)
+                wun = sum(f.text_length(w[4], 1.0) for w in plain)
+                if sum(len(w[4]) for w in plain) < 5:
+                    wun = 0
             if wun > 0 and sum(len(w[4]) for w in ln["words"]) >= 5:
                 sz = wpx / wun
             else:
@@ -867,8 +905,10 @@ def analyze(page, dpi=OCR_DPI, keep_text=False):
         base = _baseline(keep, b, scale)
         if base is None or not (b.y0 + 0.4 * (b.y1 - b.y0) <= base <= b.y1 + 1):
             base = b.y1 - 0.20 * size
+        ital = _is_italic(keep, b, scale)
         span = {"text": _fix_tokens(ln["text"]), "bbox": tuple(b), "origin": (b.x0, base), "size": size,
-                "font": "Times New Roman" + ("-Bold" if bold else ""), "flags": 16 if bold else 0,
+                "font": "Times New Roman" + ("-Bold" if bold else "") + ("-Italic" if ital else ""),
+                "flags": (16 if bold else 0) | (2 if ital else 0),
                 "color": 0, "ascender": 0.891, "descender": -0.216, "alpha": 255}
         raw = {"bbox": tuple(b), "spans": [span], "dir": (1, 0), "wmode": 0}
         out.append({"bbox": fitz.Rect(b), "spans": [span], "raw": raw, "ocr": True})
@@ -1115,3 +1155,122 @@ def analyze_many(doc, jobs, progress=None):
         if progress:
             progress(done, len(jobs))
     return res
+
+
+def image_text_page(page):
+    """Trang PDF có chữ thật NHƯNG phần lớn nội dung là ẢNH chụp/scan chứa chữ (vd tiêu đề gõ máy + phần thân là
+    ảnh scan dán vào). Chuyển Word/Excel phải nhận dạng chữ trong ảnh, không để nguyên khung ảnh."""
+    try:
+        if page.rotation:
+            return False
+        area = page.rect.get_area()
+        imgs = []
+        for info in page.get_image_info():
+            r = fitz.Rect(info["bbox"]) & page.rect
+            if r.get_area() >= 0.15 * area:
+                imgs.append(r)
+        if not imgs:
+            return False
+        words = [w for w in page.get_text("words") if w[4].strip()]
+        inside = sum(1 for w in words if any(r.contains(fitz.Point((w[0] + w[2]) / 2, (w[1] + w[3]) / 2))
+                                              for r in imgs))
+        if inside > max(2, 0.2 * len(words)):
+            return False          # chữ thật nằm ngay trên ảnh -> không phải ảnh chứa chữ cần nhận dạng
+        import cv2
+        tmp, tp = _textless(page)
+        dpi = 100
+        n = 0
+        for r in imgs:
+            pm = tp.get_pixmap(dpi=dpi, clip=r, colorspace=fitz.csGRAY, alpha=False)
+            g = np.frombuffer(pm.samples, dtype=np.uint8).reshape(pm.height, pm.stride)[:, :pm.width]
+            ink = (g < 140).astype(np.uint8)
+            # gộp chữ thành dòng; chỉ đếm DÒNG VĂN BẢN dài (>= 40% bề ngang ảnh, cao cỡ 1 dòng chữ)
+            # -> hình vẽ / sơ đồ có vài nhãn chữ ngắn (vd sơ đồ phản ứng hoá học) không bị tính
+            m = cv2.dilate(ink, np.ones((max(1, int(dpi * 0.02)), max(3, int(dpi * 0.12))), np.uint8))
+            k, _l, st, _c = cv2.connectedComponentsWithStats(m, connectivity=8)
+            for i in range(1, k):
+                x, y, w, h, a = st[i]
+                if w >= 0.4 * pm.width and dpi * 0.07 <= h <= dpi * 0.35:
+                    n += 1
+            if n >= 4:
+                return True
+        return False
+    except Exception:
+        return False
+
+
+# =============================================================================
+#  KIỂM TRA "CÓ PHẢI CHỮ VIỆT HỢP LỆ" + NHẬN DẠNG LẠI DÒNG ĐỌC SAI BẰNG BỘ DỮ LIỆU KỸ HƠN
+# =============================================================================
+_SYL = re.compile(r"^(ngh|ng|nh|ch|gh|gi|kh|ph|qu|th|tr|[bcdđghklmnpqrstvx])?"
+                  r"(oa|oă|oe|uy|uâ|uê|uơ|ươ|iê|yê|uô|ưa|ia|ua|ai|ao|au|ay|âu|ây|eo|êu|iu|oi|ôi|ơi|ui|ưi|ưu|"
+                  r"oai|oay|uây|uôi|ươi|ươu|iêu|yêu|uya|oao|oeo|[aăâeêioôơuưy])"
+                  r"(ch|ng|nh|[cmnpt])?$")
+
+
+def _base_vn(t):
+    import unicodedata as ud
+    out = []
+    for ch in ud.normalize("NFD", t.lower()):
+        if ud.category(ch) == "Mn" and ch not in ("\u0306", "\u0302", "\u031b"):   # bỏ dấu thanh, giữ ă â ơ ư
+            continue
+        out.append(ch)
+    return ud.normalize("NFC", "".join(out))
+
+
+def vn_score(text):
+    """Tỉ lệ từ "hợp lệ" (âm tiết tiếng Việt, số, ký hiệu) trong 1 dòng nhận dạng."""
+    toks = [t for t in re.split(r"\s+", text) if t]
+    if not toks:
+        return 1.0
+    good = 0
+    for t in toks:
+        core = t.strip(".,;:!?()[]\"'“”-–…/")
+        if not core or re.fullmatch(r"[\d./\-:,]+", core) or re.fullmatch(r"[A-Z0-9/\-]{2,}", core):
+            good += 1
+            continue
+        if not (core.islower() or core.isupper() or (core[:1].isupper() and core[1:].islower())):
+            continue                      # hoa / thường lẫn lộn ("HÁHg") -> đọc sai
+        if _SYL.match(_base_vn(core)):
+            good += 1
+    return good / len(toks)
+
+
+def _reocr_bad_lines(words, ocr_img, scale, dpi):
+    """Dòng có nhiều "từ" không phải tiếng Việt -> cắt riêng dòng đó, nhận dạng lại bằng bộ dữ liệu 'best'
+    (chậm hơn nhưng kỹ hơn); lấy kết quả tốt hơn."""
+    best_dir = tessdata_dir()
+    if not best_dir or best_dir == ocr_dir():
+        return words
+    from collections import OrderedDict
+    groups = OrderedDict()
+    for w in words:
+        groups.setdefault((w[5], w[6]), []).append(w)
+    out = []
+    n_redo = 0
+    H, W = ocr_img.shape
+    for key, ws in groups.items():
+        text = " ".join(w[4] for w in ws)
+        if len(ws) < 2 or vn_score(text) >= 0.6 or n_redo >= 15:
+            out += ws
+            continue
+        x0 = min(w[0] for w in ws); y0 = min(w[1] for w in ws)
+        x1 = max(w[2] for w in ws); y1 = max(w[3] for w in ws)
+        m = int(dpi * 0.05)
+        X0, Y0 = max(0, int(x0 / scale) - m), max(0, int(y0 / scale) - m)
+        X1, Y1 = min(W, int(x1 / scale) + m), min(H, int(y1 / scale) + m)
+        crop = np.full((Y1 - Y0 + 2 * m, X1 - X0 + 2 * m), 255, np.uint8)
+        crop[m:m + Y1 - Y0, m:m + X1 - X0] = ocr_img[Y0:Y1, X0:X1]
+        r = fitz.Rect(0, 0, crop.shape[1] * scale, crop.shape[0] * scale)
+        try:
+            got = _ocr_words(r, crop, dpi, tessdir=best_dir)
+        except Exception:
+            got = []
+        n_redo += 1
+        got = [g for g in got if g[4].strip()]
+        if got and vn_score(" ".join(g[4] for g in got)) > vn_score(text) + 0.15:
+            ox, oy = (X0 - m) * scale, (Y0 - m) * scale
+            out += [(g[0] + ox, g[1] + oy, g[2] + ox, g[3] + oy, g[4], key[0], key[1], k) for k, g in enumerate(got)]
+        else:
+            out += ws
+    return out

@@ -393,6 +393,33 @@ def run(out_dir):
 
     step("PDF scan nhieu trang -> Word (nhan dang song song nhieu nhan)", parallel_ocr_check)
 
+    def mixed_page_check():
+        # Trang có chữ thật (tiêu đề) + phần thân là ẢNH chứa chữ -> Word phải ra chữ gõ được, không để khung ảnh
+        import ocrpage
+        import wordnative
+        import zipfile
+        if not ocrpage.ocr_available():
+            raise RuntimeError("thieu du lieu OCR")
+        body = fitz.open()
+        bp = body.new_page(width=500, height=300)
+        for k in range(8):
+            bp.insert_text((20, 30 + k * 30), "Dòng nội dung số %d của văn bản trong ảnh scan" % (k + 1),
+                           fontname="F0", fontfile=path, fontsize=14)
+        png = bp.get_pixmap(dpi=150).tobytes("png")
+        d = fitz.open()
+        pg = d.new_page()
+        pg.insert_text((200, 60), "TIÊU ĐỀ CHỮ THẬT", fontname="F0", fontfile=path, fontsize=14)
+        pg.insert_image(fitz.Rect(50, 100, 550, 400), stream=png)
+        assert ocrpage.image_text_page(d[0]), "khong nhan ra trang co anh chua chu"
+        dst = out("trang_anh_chu.docx")
+        wordnative.pdf_to_docx(d, dst)
+        z = zipfile.ZipFile(dst)
+        x = "".join(z.read(n).decode("utf-8") for n in z.namelist() if n.startswith("word/") and n.endswith(".xml"))
+        log("    trang chu that + anh chua chu -> Word: %s" % ("TIÊU ĐỀ" in x and "Dòng nội dung" in x))
+        assert "TIÊU ĐỀ CHỮ THẬT" in x and "Dòng nội dung số 5" in x
+
+    step("Trang PDF co anh chua chu -> Word chu go duoc, khong khung anh", mixed_page_check)
+
     def merge_check():
         # gộp nhiều PDF -> 1 file; file gốc không đổi; không ghi đè file nguồn
         import merger
